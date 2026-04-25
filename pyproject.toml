@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qcfd-mps-burgers"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "qiskit>=2.0,<3.0",
+    "qiskit_aer",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "quimb",
+    "numba>=0.59",
+    "pytest",
+    "q8020_cfd_metautil @ git+https://github.com/Q8020-CFD/q8020-cfd-metautil",
+    "q8020_cfd_qutil @ git+https://github.com/Q8020-CFD/q8020-cfd-qutil",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+
+[tool.pylint.messages_control]
+disable = [
+    "C0103",
+    "C0305",
+    "C0303",
+    "C0301",
+    "W0621",
+]

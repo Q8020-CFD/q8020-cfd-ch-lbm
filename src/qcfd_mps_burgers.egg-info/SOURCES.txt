@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+src/qcfd_mps_burgers.egg-info/PKG-INFO
+src/qcfd_mps_burgers.egg-info/SOURCES.txt
+src/qcfd_mps_burgers.egg-info/dependency_links.txt
+src/qcfd_mps_burgers.egg-info/requires.txt
+src/qcfd_mps_burgers.egg-info/top_level.txt
+tests/test_burgers.py
+tests/test_cole_hopf_circuit.py
+tests/test_mpo.py
+tests/test_nonlinear.py
