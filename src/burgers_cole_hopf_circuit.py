@@ -478,6 +478,11 @@ def _run_shots_batch(
     shots: int,
     bond_dim: int | None = None,
     encoding: str = "binary",
+    backend: Any = None,
+    backend_type: str = "sim",
+    backend_name: str | None = None,
+    optimization_level: int = 1,
+    seed: int | None = None,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Batch shots readout per spec §7 (P-C optimised).
 
@@ -492,8 +497,10 @@ def _run_shots_batch(
 
     Returns list of (phi_reconstructed, metrics) per snap_step.
     """
-    from qiskit import transpile as qk_transpile
-    from qiskit_aer import AerSimulator
+    from q8020_cfd_qutil.circuit import (
+        transpile_circuit,
+        execute_circuit_counts,
+    )
 
     from burgers_mps import (
         classical_to_mps, mps_to_circuit, normalize_state,
@@ -533,28 +540,57 @@ def _run_shots_batch(
             init_qc.compose(full_qc, qubits=heat_qubit_map),
         )
 
-    # --- Single transpile + single backend ----------------------------
-    backend = AerSimulator()
-    transpiled = qk_transpile(
-        raw_circs, backend, optimization_level=1,
-    )
+    # --- Hardware-async: fire-and-record, return placeholders ----------
+    if backend_type == "hardware":
+        from q8020_cfd_qutil.job import submit_job
+        import datetime
+        job_id = submit_job(
+            raw_circs,
+            backend_name=backend_name,
+            shots=shots,
+            optimization_level=optimization_level,
+        )
+        print(
+            f"[cole_hopf_circuit] hardware job submitted: {job_id}",
+            file=sys.stderr, flush=True,
+        )
+        results: list[tuple[np.ndarray, dict[str, Any]]] = []
+        for s in snap_steps:
+            phi_hat = np.full(N, np.nan)
+            met: dict[str, Any] = {
+                "shots": shots,
+                "n_kept": 0,
+                "p_success": float("nan"),
+                "n_steps": s,
+                "step": s,
+                "job_id": job_id,
+                "backend_name": backend_name,
+                "submitted_at": datetime.datetime.now(
+                    datetime.timezone.utc,
+                ).isoformat(),
+                "shots_per_circuit": shots,
+            }
+            results.append((phi_hat, met))
+        return results
 
-    # --- Run and post-select each circuit -----------------------------
+    # --- Transpile + execute each circuit via qutil --------------------
     results: list[tuple[np.ndarray, dict[str, Any]]] = []
-    for circ_t, s in zip(transpiled, snap_steps):
-        counts = backend.run(
-            circ_t, shots=shots,
-        ).result().get_counts()
+    for raw_qc, s in zip(raw_circs, snap_steps):
+        qc_t, t_info = transpile_circuit(
+            raw_qc, backend,
+            optimization_level=optimization_level,
+            seed_transpiler=seed,
+        )
+        counts, exec_info = execute_circuit_counts(
+            qc_t, backend, shots=shots, seed=seed,
+        )
 
+        # Post-select: slice by position (no .split())
         n_kept = 0
         data_counts: dict[str, int] = {}
         for bitstring, count in counts.items():
-            parts = bitstring.split()
-            if len(parts) == 2:
-                data_bits, anc_bits = parts[0], parts[1]
-            else:
-                data_bits = bitstring[:q]
-                anc_bits = bitstring[q:]
+            data_bits = bitstring[:q]
+            anc_bits = bitstring[q:]
             if all(c == "0" for c in anc_bits):
                 n_kept += count
                 data_counts[data_bits] = (
@@ -583,6 +619,8 @@ def _run_shots_batch(
             "p_success": p_success,
             "n_steps": s,
             "step": s,
+            "transpile": t_info,
+            "execute": exec_info,
         }
         results.append((phi_hat, met))
 
@@ -601,6 +639,11 @@ def run_cole_hopf_circuit_simulation(
     shots: int = 0,
     bond_dim: int | None = None,
     encoding: str = "binary",
+    backend: Any = None,
+    backend_type: str = "sim",
+    backend_name: str | None = None,
+    optimization_level: int = 1,
+    seed: int | None = None,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
 
@@ -689,6 +732,9 @@ def run_cole_hopf_circuit_simulation(
             psi0, q, nu, dt, snap_steps, L_box, phi_norm,
             bc=phi_bc, propagator=propagator, shots=shots,
             bond_dim=bond_dim, encoding=encoding,
+            backend=backend, backend_type=backend_type,
+            backend_name=backend_name,
+            optimization_level=optimization_level, seed=seed,
         )
         from burgers_encoding import permute_from_encoding
         for (phi_hat, met), s in zip(batch_results, snap_steps):

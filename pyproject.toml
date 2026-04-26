@@ -16,9 +16,13 @@ dependencies = [
     "quimb",
     "numba>=0.59",
     "pytest",
-    "q8020_cfd_metautil @ git+https://github.com/Q8020-CFD/q8020-cfd-metautil",
-    "q8020_cfd_qutil @ git+https://github.com/Q8020-CFD/q8020-cfd-qutil",
+    "q8020_cfd_metautil",
+    "q8020_cfd_qutil",
 ]
+
+[tool.uv.sources]
+q8020_cfd_metautil = { path = "../q8020/q8020-cfd-metautil", editable = true }
+q8020_cfd_qutil = { path = "../q8020/q8020-cfd-qutil", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -671,6 +671,10 @@ def run_simulation(
     propagator: str = "qft-diagonal",
     snapshot_interval: int = 1,
     encoding: str = "binary",
+    backend_type: str = "sim",
+    coupling_map: str = "default",
+    optimization_level: int = 1,
+    seed: int | None = None,
 ) -> tuple[list[np.ndarray], list[dict] | None]:
     """Run multi-step Burgers simulation.
 
@@ -711,11 +715,25 @@ def run_simulation(
         )
         return sols, mets
     if method == "cole_hopf_circuit":
+        backend = None
+        if shots > 0:
+            from q8020_cfd_qutil.backend import get_backend
+            backend = get_backend(
+                name=backend_name,
+                backend_type=backend_type,
+                t1=t1, t2=t2,
+                coupling_map=coupling_map,
+            )
         sols, mets = run_cole_hopf_circuit_simulation(
             u0, x, nu, dt, n_steps, bc=bc,
             propagator=propagator, shots=shots,
             snapshot_interval=snapshot_interval,
             bond_dim=bond_dim, encoding=encoding,
+            backend=backend,
+            backend_type=backend_type,
+            backend_name=backend_name,
+            optimization_level=optimization_level,
+            seed=seed,
         )
         return sols, mets
 

@@ -534,3 +534,59 @@ _group_postproc = ["python ./qcfd-mps-burgers/docs/plot_hadamard_time_evolution.
 "--source" = "none"
 "--save-every" = 8
 
+# ── Shots / backend smoke tests ──────────────────────────────────────────────
+
+[cole_hopf_circuit_shots_smoke_ideal]
+"--method" = "cole_hopf_circuit"
+"--q" = 4
+"--shots" = 4096
+"--backend-type" = "sim"
+"--n-steps" = 4
+"--cfl" = 0.1
+"--propagator" = "qft-diagonal"
+
+[cole_hopf_circuit_shots_smoke_noisy]
+"--method" = "cole_hopf_circuit"
+"--q" = 4
+"--shots" = 4096
+"--backend-type" = "sim"
+"--t1" = 50
+"--t2" = 70
+"--n-steps" = 4
+"--cfl" = 0.1
+"--propagator" = "qft-diagonal"
+
+[cole_hopf_circuit_shots_q5]
+"--method" = "cole_hopf_circuit"
+"--q" = 5
+"--shots" = 2048
+"--backend-type" = "sim"
+"--n-steps" = 2
+"--cfl" = 0.1
+"--propagator" = "qft-diagonal"
+"--save-every" = 1
+
+[cole_hopf_circuit_shots_q5_anim]
+"--method" = "cole_hopf_circuit"
+"--q" = 5
+"--nu" = 0.1
+"--shots" = 100000
+"--shock-pct" = 100.0
+"--backend-type" = "sim"
+"--seed" = 42
+"--propagator" = "qft-diagonal"
+"--save-every" = 1
+_group_postproc = ["python ./qcfd-mps-burgers/docs/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_shots_q5_shock]
+"--method" = "cole_hopf_circuit"
+"--q" = 5
+"--nu" = 0.05
+"--shots" = 100000
+"--shock-pct" = 200.0
+"--backend-type" = "sim"
+"--seed" = 42
+"--propagator" = "qft-diagonal"
+"--save-every" = 1
+_group_postproc = ["python ./qcfd-mps-burgers/docs/plot_cole_hopf_circuit_evolution.py"]
+

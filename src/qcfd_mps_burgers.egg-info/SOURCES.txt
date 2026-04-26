@@ -9,3 +9,4 @@ tests/test_burgers.py
 tests/test_cole_hopf_circuit.py
 tests/test_mpo.py
 tests/test_nonlinear.py
+tests/test_shots_backend.py

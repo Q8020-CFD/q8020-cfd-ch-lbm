@@ -251,6 +251,10 @@ if __name__ == "__main__":
         propagator=args.propagator,
         snapshot_interval=max(1, args.save_every),
         encoding=args.encoding,
+        backend_type=args.backend_type,
+        coupling_map=args.coupling_map,
+        optimization_level=args.optimization_level,
+        seed=args.seed,
     )
     t_method = time.time() - t0
     print(f"[burgers] method done {t_method:.2f}s", file=sys.stderr, flush=True)
@@ -307,6 +311,10 @@ if __name__ == "__main__":
         t2=args.t2,
         bc=args.bc,
         sign_recovery=args.sign_recovery,
+        backend_type=args.backend_type,
+        coupling_map=args.coupling_map,
+        optimization_level=args.optimization_level,
+        seed=args.seed,
     )
     write_case(outdir, case_data, experiment_id=exp_id)
 
@@ -333,6 +341,10 @@ if __name__ == "__main__":
         "t1": args.t1,
         "t2": args.t2,
         "backend_name": args.backend,
+        "backend_type": args.backend_type,
+        "coupling_map": args.coupling_map,
+        "optimization_level": args.optimization_level,
+        "seed": args.seed,
     }
     if args.method != "shift":
         from burgers_nonlinear import build_evolution_hamiltonian

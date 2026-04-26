@@ -861,8 +861,19 @@ wheels = [
 [[package]]
 name = "q8020-cfd-metautil"
 version = "0.1.0"
-source = { git = "https://github.com/Q8020-CFD/q8020-cfd-metautil#862f584db88b6971833a4e76e0f795b489d41402" }
+source = { editable = "../q8020/q8020-cfd-metautil" }
 dependencies = [
+    { name = "duckdb" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "plotly" },
+    { name = "streamlit" },
+    { name = "subprocess-tee" },
+    { name = "watchdog" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "duckdb" },
     { name = "matplotlib" },
     { name = "numpy" },
@@ -875,11 +886,20 @@ dependencies = [
 [[package]]
 name = "q8020-cfd-qutil"
 version = "0.1.0"
-source = { git = "https://github.com/Q8020-CFD/q8020-cfd-qutil#cfc827b818e6e084037e0e1e2ab8a3416b1a3e5c" }
+source = { editable = "../q8020/q8020-cfd-qutil" }
 dependencies = [
     { name = "numpy" },
     { name = "q8020-cfd-metautil" },
     { name = "qiskit" },
+    { name = "qiskit-aer" },
+    { name = "qiskit-ibm-runtime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "q8020-cfd-metautil", editable = "../q8020/q8020-cfd-metautil" },
+    { name = "qiskit", specifier = ">=2.0,<3.0" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime" },
 ]
@@ -907,8 +927,8 @@ requires-dist = [
     { name = "numba", specifier = ">=0.59" },
     { name = "numpy" },
     { name = "pytest" },
-    { name = "q8020-cfd-metautil", git = "https://github.com/Q8020-CFD/q8020-cfd-metautil" },
-    { name = "q8020-cfd-qutil", git = "https://github.com/Q8020-CFD/q8020-cfd-qutil" },
+    { name = "q8020-cfd-metautil", editable = "../q8020/q8020-cfd-metautil" },
+    { name = "q8020-cfd-qutil", editable = "../q8020/q8020-cfd-qutil" },
     { name = "qiskit", specifier = ">=2.0,<3.0" },
     { name = "qiskit-aer" },
     { name = "quimb" },
