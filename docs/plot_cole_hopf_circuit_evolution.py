@@ -163,18 +163,30 @@ def main() -> None:
     u0 = frames_q[0].copy()
 
     source_fn = source_term_sine if source == 'sine' else None
+    forced = source_fn is not None
     sols_classical = solve_burgers(
         u0, x, nu, dt, n_steps_total,
         source_fn=source_fn, bc=bc,
     )
     frames_cl = [sols_classical[int(k)] for k in step_keys]
 
-    # Cole-Hopf MPS: exact same physics as circuit, no circuit error
-    print('  Computing Cole-Hopf MPS reference ...', file=sys.stderr)
-    sols_mps, _ = run_cole_hopf_simulation(
-        u0, x, nu, dt, n_steps_total, bc=bc,
-    )
-    frames_mps = [sols_mps[int(k)] for k in step_keys]
+    # Cole-Hopf MPS: exact same physics as circuit, no circuit error.
+    # Skipped when forcing is active — run_cole_hopf_simulation has no
+    # source_fn parameter, so the curve would solve a different PDE
+    # (unforced) and mislead the comparison.
+    if not forced:
+        print('  Computing Cole-Hopf MPS reference ...', file=sys.stderr)
+        sols_mps, _ = run_cole_hopf_simulation(
+            u0, x, nu, dt, n_steps_total, bc=bc,
+        )
+        frames_mps = [sols_mps[int(k)] for k in step_keys]
+    else:
+        print(
+            '  Skipping Cole-Hopf MPS reference: forced run '
+            '(unforced classical-CH would mislead).',
+            file=sys.stderr,
+        )
+        frames_mps = None
 
     # Truncate at divergence
     amp0 = max(np.max(np.abs(u0)), 1.0)
@@ -194,7 +206,8 @@ def main() -> None:
     step_keys = step_keys[:valid_end]
     frames_q = frames_q[:valid_end]
     frames_cl = frames_cl[:valid_end]
-    frames_mps = frames_mps[:valid_end]
+    if frames_mps is not None:
+        frames_mps = frames_mps[:valid_end]
 
     # Animation
     def _fmax(fs):
@@ -202,8 +215,10 @@ def main() -> None:
                 if np.any(np.isfinite(f))]
         return max(vals) if vals else 1.0
 
-    ymax = max(_fmax(frames_q), _fmax(frames_cl),
-               _fmax(frames_mps)) * 1.15
+    _frame_lists = [frames_q, frames_cl]
+    if frames_mps is not None:
+        _frame_lists.append(frames_mps)
+    ymax = max(_fmax(fs) for fs in _frame_lists) * 1.15
 
     q_val = anchor_meta.get('q', '?')
     propagator = anchor_meta.get('propagator', 'qft-diagonal')
@@ -230,10 +245,13 @@ def main() -> None:
     ic_line, = ax_u.plot(
         x, u0, 'k--', alpha=0.2, lw=1, label='IC',
     )
-    mps_line, = ax_u.plot(
-        [], [], '-', color='#2ca02c', lw=2.2,
-        label='Exact classical (tensor net)',
-    )
+    if frames_mps is not None:
+        mps_line, = ax_u.plot(
+            [], [], '-', color='#2ca02c', lw=2.2,
+            label='Exact classical (tensor net)',
+        )
+    else:
+        mps_line = None
     cl_line, = ax_u.plot(
         [], [], 'b-', lw=1.2, alpha=0.5, label='FTCS (num. diffusive)',
     )
@@ -247,32 +265,43 @@ def main() -> None:
         fontsize=10, va='top', fontfamily='monospace',
     )
 
-    # Error panel: vs MPS (circuit-only error) and vs FTCS
-    err_vs_mps = np.zeros(len(step_keys))
+    # Error panel: vs MPS (circuit-only error, unforced runs only) and vs FTCS
+    err_vs_mps = np.zeros(len(step_keys)) if frames_mps is not None else None
     err_vs_ftcs = np.zeros(len(step_keys))
     for i in range(len(step_keys)):
-        norm_mps = np.linalg.norm(frames_mps[i])
         norm_cl = np.linalg.norm(frames_cl[i])
-        if norm_mps > 1e-15:
-            err_vs_mps[i] = np.linalg.norm(
-                frames_q[i] - frames_mps[i],
-            ) / norm_mps
+        if frames_mps is not None:
+            norm_mps = np.linalg.norm(frames_mps[i])
+            if norm_mps > 1e-15:
+                err_vs_mps[i] = np.linalg.norm(
+                    frames_q[i] - frames_mps[i],
+                ) / norm_mps
         if norm_cl > 1e-15:
             err_vs_ftcs[i] = np.linalg.norm(
                 frames_q[i] - frames_cl[i],
             ) / norm_cl
     times = np.array([int(k) * dt for k in step_keys])
-    line_err_mps, = ax_err.plot(
-        [], [], '-', color='#2ca02c', lw=1.5,
-        label='vs exact classical (circuit err)',
-    )
+    if frames_mps is not None:
+        line_err_mps, = ax_err.plot(
+            [], [], '-', color='#2ca02c', lw=1.5,
+            label='vs exact classical (circuit err)',
+        )
+    else:
+        line_err_mps = None
     line_err_ftcs, = ax_err.plot(
         [], [], 'b-', lw=1, alpha=0.5,
         label='vs FTCS (scheme diff)',
     )
     ax_err.set_xlim(times[0], times[-1])
-    err_max = max(err_vs_mps.max(), err_vs_ftcs.max()) * 1.2
-    ax_err.set_ylim(0, max(err_max, 1e-6))
+    err_series = [err_vs_ftcs]
+    if err_vs_mps is not None:
+        err_series.append(err_vs_mps)
+    err_pos = np.concatenate([s[s > 0] for s in err_series]) \
+        if any((s > 0).any() for s in err_series) else np.array([1e-6])
+    err_lo = max(err_pos.min() * 0.5, 1e-12)
+    err_hi = err_pos.max() * 2.0
+    ax_err.set_yscale('log')
+    ax_err.set_ylim(err_lo, err_hi)
     ax_err.set_xlabel("Time")
     ax_err.set_ylabel("Rel. L2 error")
     ax_err.legend(loc='upper left', fontsize=8)
@@ -288,22 +317,26 @@ def main() -> None:
         step = int(step_keys[frame_idx])
         t = step * dt
         t_pct = 100.0 * t / t_shock
-        mps_line.set_data(x, frames_mps[frame_idx])
         cl_line.set_data(x, frames_cl[frame_idx])
         q_line.set_data(x, frames_q[frame_idx])
+        artists = [cl_line, q_line, time_text, line_err_ftcs]
+        if mps_line is not None:
+            mps_line.set_data(x, frames_mps[frame_idx])
+            line_err_mps.set_data(
+                times[:frame_idx + 1], err_vs_mps[:frame_idx + 1],
+            )
+            err_text = f"  err_vs_MPS={err_vs_mps[frame_idx]:.2e}"
+            artists.extend([mps_line, line_err_mps])
+        else:
+            err_text = f"  err_vs_FTCS={err_vs_ftcs[frame_idx]:.2e}"
         time_text.set_text(
             f"step {step}/{n_steps_total}  "
-            f"t={t:.4f} ({t_pct:.0f}% T_shock)  "
-            f"err_vs_MPS={err_vs_mps[frame_idx]:.2e}"
-        )
-        line_err_mps.set_data(
-            times[:frame_idx + 1], err_vs_mps[:frame_idx + 1],
+            f"t={t:.4f} ({t_pct:.0f}% T_shock)" + err_text
         )
         line_err_ftcs.set_data(
             times[:frame_idx + 1], err_vs_ftcs[:frame_idx + 1],
         )
-        return (mps_line, cl_line, q_line, time_text,
-                line_err_mps, line_err_ftcs)
+        return tuple(artists)
 
     anim = manimation.FuncAnimation(
         fig, update, frames=len(step_keys),

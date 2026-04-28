@@ -550,11 +550,14 @@ Also verify whether the paper's shift operator convention matches the right-shif
 the `compute_rhs_shift` negation at line 50 would be a sign error, not a correction.
 
 **R2 (Required): Clarify LCU vs. Pauli decomposition architecture**
-Determine whether the paper's quantum algorithm uses LCU block-encoding (as `burgers_mpo.py`
-suggests) or Pauli decomposition (as `burgers_nonlinear.py` implements). Either:
-- Document that Pauli decomposition is the paper's approach and mark LCU circuits as
-  supplementary/exploratory.
-- Or integrate the LCU circuits into the evolution pipeline if that is the paper's method.
+~~Determine whether the paper's quantum algorithm uses LCU block-encoding (as `burgers_mpo.py`
+suggests) or Pauli decomposition (as `burgers_nonlinear.py` implements).~~
+**Resolved by [SPEC-F3-LCU-method.md](SPEC-F3-LCU-method.md).**
+Variant 1.B implemented: `--propagator lcu` for `cole_hopf_circuit` method
+uses LCU block-encoding of the heat propagator via Taylor expansion of
+the Laplacian with shift-operator primitives (`burgers_lcu.py`).
+Pauli decomposition remains the paper's approach for the direct-`u`
+family; LCU is the pure-quantum alternative for the Cole-Hopf path.
 
 **R3 (Required): Make classical baseline consistent with quantum methods**
 The classical reference solution in `burgers_solver.py` should use the same spatial operators

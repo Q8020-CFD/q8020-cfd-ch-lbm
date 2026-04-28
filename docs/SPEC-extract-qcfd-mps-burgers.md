@@ -1,4 +1,4 @@
-# SPEC — Extract `murali_burgers` into standalone repo `qcfd-mps-burgers`
+# SPEC — Extract `murali_burgers` into standalone repo `q8020-mps-burgers`
 
 Self-contained handoff for an agent that has not seen the prior
 conversation. Phase 0 (capture-commit of axequalsb) is already done.
@@ -15,11 +15,11 @@ top-level workspace member so it can have its own deps, its own GitHub
 repo, and its own release cadence.
 
 Source root after extraction:
-`/Users/agallojr/proj/src/q8020/qcfd-mps-burgers/`
+`/Users/agallojr/proj/src/q8020/q8020-mps-burgers/`
 
 ## 1. Decisions (do not relitigate)
 
-- **Repo name:** `qcfd-mps-burgers`
+- **Repo name:** `q8020-mps-burgers`
 - **Layout:** flat — files in `src/` directly, no `__init__.py`, no
   package nesting. The current code already imports as bare modules
   (`from burgers_cole_hopf import ...`); flat preserves that with
@@ -36,7 +36,7 @@ Source root after extraction:
 ## 2. Target layout
 
 ```
-qcfd-mps-burgers/
+q8020-mps-burgers/
 ├── .python-version           # contents: "3.12\n"
 ├── pyproject.toml
 ├── README.md                 # short, points at docs/
@@ -76,7 +76,7 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "qcfd-mps-burgers"
+name = "q8020-mps-burgers"
 version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -144,8 +144,8 @@ Notes:
 
 Edit `/Users/agallojr/proj/src/q8020/pyproject.toml`:
 
-- Add `"qcfd-mps-burgers"` to `[tool.uv.workspace] members`
-- Add `qcfd-mps-burgers = { workspace = true }` under
+- Add `"q8020-mps-burgers"` to `[tool.uv.workspace] members`
+- Add `q8020-mps-burgers = { workspace = true }` under
   `[tool.uv.sources]`
 
 Then run `uv sync` from `/Users/agallojr/proj/src/q8020/`. It must
@@ -156,7 +156,7 @@ succeed. Do NOT modify the workspace `pyproject.toml` in any other way.
 ### 5.1 Create skeleton
 
 ```
-mkdir -p /Users/agallojr/proj/src/q8020/qcfd-mps-burgers/{src,docs,tests,input}
+mkdir -p /Users/agallojr/proj/src/q8020/q8020-mps-burgers/{src,docs,tests,input}
 ```
 
 Write `.python-version` (single line: `3.12`), `pyproject.toml` (per
@@ -167,7 +167,7 @@ at `docs/HANDOFF-burgers-pipeline.md`.
 
 Copy these eleven files from
 `q8020-cfd-axequalsb/src/murali_burgers/*.py` to
-`qcfd-mps-burgers/src/`:
+`q8020-mps-burgers/src/`:
 
 `burgers_classical.py`, `burgers_cole_hopf.py`,
 `burgers_cole_hopf_circuit.py`, `burgers_encoding.py`,
@@ -194,14 +194,14 @@ on the path.)
 ### 5.3 Move docs
 
 From `q8020-cfd-axequalsb/src/murali_burgers/analysis/`:
-- All `*.md` → `qcfd-mps-burgers/docs/`
-- All `plot_*.py` and `animate_*.py` → `qcfd-mps-burgers/docs/`
-- All `*.png`, `*.gif` → `qcfd-mps-burgers/docs/`
+- All `*.md` → `q8020-mps-burgers/docs/`
+- All `plot_*.py` and `animate_*.py` → `q8020-mps-burgers/docs/`
+- All `*.png`, `*.gif` → `q8020-mps-burgers/docs/`
 
 ### 5.4 Move tests
 
 From `q8020-cfd-axequalsb/src/murali_burgers/analysis/`:
-- All `test_*.py` → `qcfd-mps-burgers/tests/`
+- All `test_*.py` → `q8020-mps-burgers/tests/`
 
 Then update each `test_*.py`'s `sys.path` insertion to point at
 `../src` instead of the old `murali_burgers/`. Concretely the
@@ -225,16 +225,16 @@ from the new repo root. All four existing test files
 ### 5.5 Move input TOML
 
 Copy `q8020-cfd-axequalsb/input/burgers_quantum.toml` to
-`qcfd-mps-burgers/input/burgers_quantum.toml`.
+`q8020-mps-burgers/input/burgers_quantum.toml`.
 
 Rewrite path references inside it (currently 14 lines, see grep
 results in §7 below). All `_script` and `_group_postproc` paths of the
 form:
 
 - `./q8020-cfd-axequalsb/src/murali_burgers/burgers_solver.py`
-  → `./qcfd-mps-burgers/src/burgers_solver.py`
+  → `./q8020-mps-burgers/src/burgers_solver.py`
 - `./q8020-cfd-axequalsb/src/murali_burgers/analysis/plot_*.py`
-  → `./qcfd-mps-burgers/docs/plot_*.py`
+  → `./q8020-mps-burgers/docs/plot_*.py`
 
 Verify with: `grep -n "murali_burgers\|axequalsb" input/burgers_quantum.toml`
 must return empty.
@@ -259,7 +259,7 @@ workspace root:
 ```
 cd /Users/agallojr/proj/src/q8020
 uv run python -c "import burgers_solver" \
-  --with qcfd-mps-burgers
+  --with q8020-mps-burgers
 ```
 
 (or equivalent — the goal is "the new package is importable through
@@ -267,7 +267,7 @@ the workspace").
 
 ### 5.8 Smoke test
 
-From `/Users/agallojr/proj/src/q8020/qcfd-mps-burgers/`:
+From `/Users/agallojr/proj/src/q8020/q8020-mps-burgers/`:
 
 1. `pytest tests/` — all four existing test files pass.
 2. `python src/burgers_solver.py --help` — argparse output renders, no
@@ -290,7 +290,7 @@ Phase 5/6.
 
 ## 7. Verification grep targets
 
-After all moves, these must hold inside `qcfd-mps-burgers/`:
+After all moves, these must hold inside `q8020-mps-burgers/`:
 
 - `grep -rn "murali_burgers" .` → empty
 - `grep -rn "q8020-cfd-axequalsb" .` → empty
@@ -304,7 +304,7 @@ were at lines 21, 128, 143, 298, 311, 336, 348, 360, 376, 396, 410,
 
 ## 8. Acceptance
 
-- New repo skeleton at `qcfd-mps-burgers/` matches §2 layout exactly
+- New repo skeleton at `q8020-mps-burgers/` matches §2 layout exactly
 - `pyproject.toml` matches §3
 - Workspace `pyproject.toml` updated per §4 and `uv sync` is clean
 - `pytest tests/` from new repo: 4 test files all green

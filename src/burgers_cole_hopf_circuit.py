@@ -11,6 +11,7 @@ Post-selection on ancilla |0> recovers the contractive propagator.
 from __future__ import annotations
 
 import sys
+import time
 from typing import Any
 
 import numpy as np
@@ -19,7 +20,11 @@ from qiskit.circuit.library import QFTGate, RYGate, UnitaryGate
 from scipy.linalg import expm
 
 from burgers_cole_hopf import build_laplacian_dense
-from burgers_encoding import permute_operator
+from burgers_encoding import (
+    permute_from_encoding,
+    permute_operator,
+    permute_to_encoding,
+)
 
 
 # ── Laplacian eigenvalues ────────────────────────────────────────────
@@ -232,12 +237,16 @@ def heat_dense_block_step_circuit(
     L_box: float,
     bc: str = "periodic",
     encoding: str = "binary",
+    V: np.ndarray | None = None,
 ) -> QuantumCircuit:
     """One propagator layer via dense eigendecomposition + block encoding.
 
     Builds exp(nu*L*dt), eigendecomposes, and block-encodes via
     V^H + conditional Ry + V with ancilla post-selection.
     Exact per step (no Trotter error). Tractable for q <= 5.
+
+    V: optional diagonal potential (grid order, length N).  When
+    provided the propagator becomes exp(dt*(nu*L - diag(V))).
     """
     N = 1 << q
     dx = L_box / N
@@ -245,6 +254,10 @@ def heat_dense_block_step_circuit(
     L_dense = permute_operator(L_dense, q, encoding)
 
     M = nu * L_dense * dt
+    if V is not None:
+        V_enc = permute_to_encoding(V, q, encoding) \
+            if encoding != "binary" else V
+        M = M - np.diag(V_enc) * dt
     data = list(range(q))
     anc = q
     qc = QuantumCircuit(q + 1, 1, name="heat_dense_step")
@@ -287,10 +300,19 @@ def heat_dense_block_full_circuit(
     L_box: float,
     bc: str = "periodic",
     encoding: str = "binary",
+    source_fn=None,
+    x: np.ndarray | None = None,
+    t_start: float = 0.0,
 ) -> QuantumCircuit:
-    """Full evolution: N_steps dense-block layers."""
-    dt = T / N_steps
+    """Full evolution: N_steps dense-block layers.
 
+    If source_fn is given (with grid coords x), each step builds a
+    fresh propagator with V(x, t_mid) at the Strang midpoint.
+    t_start offsets the global time for chunked evolution.
+    """
+    from burgers_potential import potential_from_source
+
+    dt = T / N_steps
     data = list(range(q))
     anc = q
 
@@ -300,13 +322,36 @@ def heat_dense_block_full_circuit(
     qc.add_register(anc_cr)
     qc.add_register(data_cr)
 
-    step_qc = heat_dense_block_step_circuit(
-        q, nu, dt, L_box, bc=bc, encoding=encoding,
+    # Pre-build single step_qc when V is constant (unforced).
+    if source_fn is None:
+        shared_step = heat_dense_block_step_circuit(
+            q, nu, dt, L_box, bc=bc, encoding=encoding,
+        )
+    else:
+        shared_step = None
+
+    forced = source_fn is not None
+    log_every = max(1, N_steps // 20)
+    t0 = time.time()
+    print(
+        f"[heat_dense_block_full_circuit] building N_steps={N_steps} "
+        f"q={q} forced={forced}",
+        file=sys.stderr, flush=True,
     )
 
     for step_idx in range(N_steps):
-        # Inline the step circuit but remap ancilla measurement
-        # to the correct classical bit
+        if shared_step is not None:
+            step_qc = shared_step
+        else:
+            t_mid = t_start + (step_idx + 0.5) * dt
+            V_n = potential_from_source(
+                source_fn, x, t_mid, nu, bc=bc,
+            )
+            step_qc = heat_dense_block_step_circuit(
+                q, nu, dt, L_box, bc=bc,
+                encoding=encoding, V=V_n,
+            )
+
         qc_layer = step_qc.copy()
         qc_layer.remove_final_measurements()
         qc.compose(qc_layer, inplace=True)
@@ -314,9 +359,161 @@ def heat_dense_block_full_circuit(
         if step_idx < N_steps - 1:
             qc.reset(anc)
 
+        if (step_idx + 1) % log_every == 0 or step_idx == N_steps - 1:
+            elapsed = time.time() - t0
+            rate = (step_idx + 1) / elapsed if elapsed > 0 else 0
+            eta = (N_steps - step_idx - 1) / rate if rate > 0 else 0
+            print(
+                f"[heat_dense_block_full_circuit] step "
+                f"{step_idx + 1}/{N_steps} "
+                f"depth={qc.depth()} elapsed={elapsed:.1f}s "
+                f"rate={rate:.1f}/s eta={eta:.0f}s",
+                file=sys.stderr, flush=True,
+            )
+
     for i in range(q):
         qc.measure(data[i], data_cr[i])
 
+    print(
+        f"[heat_dense_block_full_circuit] done: depth={qc.depth()} "
+        f"size={qc.size()} build_time={time.time() - t0:.1f}s",
+        file=sys.stderr, flush=True,
+    )
+    return qc
+
+
+# ── LCU full circuit for shots path ─────────────────────────────────
+
+
+def heat_lcu_full_circuit(
+    q: int,
+    nu: float,
+    T: float,
+    N_steps: int,
+    L_box: float,
+    bc: str = "periodic",
+    taylor_order: int = 4,
+    source_fn=None,
+    x: np.ndarray | None = None,
+    t_start: float = 0.0,
+) -> QuantumCircuit:
+    """Full evolution: N_steps LCU Taylor propagator layers.
+
+    Each layer block-encodes one timestep of the heat propagator
+    via truncated Taylor LCU.  Ancilla qubits are measured and
+    reset between steps; post-select on all-zero ancilla history.
+
+    If source_fn is given (with grid coords x), each step builds a
+    fresh Strang-split propagator with V(x, t_mid).  t_start
+    offsets the global time for chunked evolution.
+
+    Returns circuit on q + n_anc qubits with the appropriate
+    number of classical bits.
+    """
+    from burgers_lcu import (
+        heat_lcu_step_circuit,
+        heat_lcu_with_potential_step_circuit,
+    )
+    from burgers_potential import potential_from_source
+
+    dt = T / N_steps
+    forced = source_fn is not None
+
+    # Build first step to determine ancilla count and layout.
+    if not forced:
+        step_qc, lam = heat_lcu_step_circuit(
+            q, nu, dt, L_box, bc=bc,
+            taylor_order=taylor_order,
+        )
+        shared_step = step_qc
+    else:
+        t_mid = t_start + 0.5 * dt
+        V_0 = potential_from_source(
+            source_fn, x, t_mid, nu, bc=bc,
+        )
+        step_qc, lam = heat_lcu_with_potential_step_circuit(
+            q, nu, dt, L_box, V_0,
+            taylor_order=taylor_order,
+        )
+        shared_step = None
+
+    n_anc = step_qc.num_qubits - q
+    data = list(range(q))
+    anc_qubits = list(range(q, q + n_anc))
+
+    anc_cr = ClassicalRegister(N_steps * n_anc, "anc_hist")
+    data_cr = ClassicalRegister(q, "data")
+    qc = QuantumCircuit(q + n_anc, name="heat_lcu_full")
+    qc.add_register(anc_cr)
+    qc.add_register(data_cr)
+    # Track per-step lambdas so consumers can see the full series,
+    # not just the last one.  In the unforced case lam is constant
+    # and lcu_lambda_history has length 1.
+    lambda_history: list[float] = [lam]
+    qc.metadata = {
+        "lcu_lambda": lam,
+        "lcu_lambda_history": lambda_history,
+    }
+
+    log_every = max(1, N_steps // 20)
+    t0 = time.time()
+    print(
+        f"[heat_lcu_full_circuit] building N_steps={N_steps} "
+        f"q={q} forced={forced}",
+        file=sys.stderr, flush=True,
+    )
+
+    for step_idx in range(N_steps):
+        if shared_step is not None:
+            cur_step = shared_step
+        else:
+            t_mid = t_start + (step_idx + 0.5) * dt
+            V_n = potential_from_source(
+                source_fn, x, t_mid, nu, bc=bc,
+            )
+            cur_step, lam_n = (
+                heat_lcu_with_potential_step_circuit(
+                    q, nu, dt, L_box, V_n,
+                    taylor_order=taylor_order,
+                )
+            )
+            # First step's lam was already pushed at construction
+            # above (using V_0); subsequent steps append.
+            if step_idx > 0:
+                lambda_history.append(lam_n)
+            qc.metadata["lcu_lambda_max"] = max(lambda_history)
+            qc.metadata["lcu_lambda_mean"] = (
+                sum(lambda_history) / len(lambda_history)
+            )
+
+        qc.compose(cur_step, inplace=True)
+        for ai, aq in enumerate(anc_qubits):
+            qc.measure(aq, anc_cr[step_idx * n_anc + ai])
+        if step_idx < N_steps - 1:
+            for aq in anc_qubits:
+                qc.reset(aq)
+
+        if (
+            (step_idx + 1) % log_every == 0
+            or step_idx == N_steps - 1
+        ):
+            elapsed = time.time() - t0
+            rate = (step_idx + 1) / elapsed if elapsed > 0 else 0
+            print(
+                f"[heat_lcu_full_circuit] step "
+                f"{step_idx + 1}/{N_steps} "
+                f"elapsed={elapsed:.1f}s rate={rate:.1f}/s",
+                file=sys.stderr, flush=True,
+            )
+
+    for i in range(q):
+        qc.measure(data[i], data_cr[i])
+
+    print(
+        f"[heat_lcu_full_circuit] done: depth={qc.depth()} "
+        f"size={qc.size()} build_time={time.time() - t0:.1f}s",
+        file=sys.stderr, flush=True,
+    )
     return qc
 
 
@@ -331,8 +528,15 @@ def _build_step_sv(
     bc: str,
     propagator: str,
     encoding: str = "binary",
+    V: np.ndarray | None = None,
+    taylor_order: int = 4,
 ) -> QuantumCircuit:
-    """Build a measurement-free step circuit for SV simulation."""
+    """Build a measurement-free step circuit for SV simulation.
+
+    V: optional diagonal potential (grid order, length N) for
+    forced Burgers.  Only supported by dense-block propagator.
+    taylor_order: truncation order for LCU Taylor propagator.
+    """
     if propagator == "qft-diagonal":
         theta = compute_theta_exact(nu, dt, q, L_box)
         data = list(range(q))
@@ -349,6 +553,10 @@ def _build_step_sv(
         L_dense = build_laplacian_dense(N, dx, bc=bc)
         L_dense = permute_operator(L_dense, q, encoding)
         M = nu * L_dense * dt
+        if V is not None:
+            V_enc = permute_to_encoding(V, q, encoding) \
+                if encoding != "binary" else V
+            M = M - np.diag(V_enc) * dt
         P_mat = expm(M)
         s_max = float(np.linalg.svd(P_mat, compute_uv=False)[0])
         eigvals, eigvecs = np.linalg.eigh(P_mat)
@@ -371,6 +579,24 @@ def _build_step_sv(
             qc.append(gate, data + [anc])
         qc.append(UnitaryGate(eigvecs, label="V"), data)
         return qc
+    elif propagator == "lcu":
+        from burgers_lcu import (
+            heat_lcu_step_circuit,
+            heat_lcu_with_potential_step_circuit,
+        )
+        if V is None:
+            lcu_qc, lam = heat_lcu_step_circuit(
+                q, nu, dt, L_box, bc=bc,
+                taylor_order=taylor_order,
+            )
+            lcu_qc.metadata = {"lcu_lambda": lam}
+        else:
+            lcu_qc, lam = heat_lcu_with_potential_step_circuit(
+                q, nu, dt, L_box, V,
+                taylor_order=taylor_order,
+            )
+            # Metadata already set by builder
+        return lcu_qc
     else:
         raise ValueError(f"Unknown propagator: {propagator}")
 
@@ -388,6 +614,9 @@ def run_cole_hopf_circuit_sv(
     use_mps_prep: bool = True,
     bond_dim: int | None = None,
     encoding: str = "binary",
+    source_fn=None,
+    x: np.ndarray | None = None,
+    taylor_order: int = 4,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Run Cole-Hopf circuit evolution via statevector simulation.
 
@@ -399,19 +628,34 @@ def run_cole_hopf_circuit_sv(
         from psi0 (original behaviour).
     bond_dim: MPS truncation bond dimension (None = full rank).
         Only used when use_mps_prep is True.
+    source_fn: callable(x, t) -> g(x,t) or None for unforced.
+    x: grid coordinates (required when source_fn is not None).
 
     Returns (psi_snapshots, metrics_list) where each psi snapshot
     is the unit-norm data-register state after post-selection.
     """
-    from qiskit.quantum_info import Statevector
+    from qiskit.quantum_info import Operator, Statevector
+    from burgers_potential import potential_from_source
 
     N = 1 << q
-    step_qc = _build_step_sv(
-        q, nu, dt, L_box, bc, propagator,
-        encoding=encoding,
-    )
 
-    sv = np.zeros(2 * N, dtype=complex)
+    # Pre-build step circuit when V is constant (unforced).
+    if source_fn is None:
+        shared_step = _build_step_sv(
+            q, nu, dt, L_box, bc, propagator,
+            encoding=encoding, taylor_order=taylor_order,
+        )
+    else:
+        shared_step = None
+
+    # Ancilla count depends on propagator (1 for qft/dense, m for LCU).
+    if shared_step is not None:
+        n_anc = shared_step.num_qubits - q
+    else:
+        # Will be determined from first step circuit.
+        n_anc = 1
+    sv_dim = N * (1 << n_anc)
+    sv = np.zeros(sv_dim, dtype=complex)
     if use_mps_prep:
         from burgers_mps import (
             classical_to_mps, mps_to_circuit, normalize_state,
@@ -440,8 +684,61 @@ def run_cole_hopf_circuit_sv(
     metrics: list[dict[str, Any]] = []
     p_success_total = 1.0
 
+    # For LCU the circuit contains multi-controlled custom gates;
+    # Statevector.evolve(qc) decomposes them one-by-one which is
+    # extremely slow.  Convert to a dense unitary matrix once, then
+    # use fast matrix-vector multiply.  At q=5 + ancillas the matrix
+    # is only 2048x2048 — negligible memory.
+    _use_dense = propagator == "lcu"
+
+    if shared_step is not None and _use_dense:
+        t0_op = time.time()
+        shared_mat = Operator(shared_step).data
+        print(
+            f"[cole_hopf_circuit_sv] pre-built shared unitary "
+            f"{shared_mat.shape} in {time.time() - t0_op:.1f}s",
+            file=sys.stderr, flush=True,
+        )
+    else:
+        shared_mat = None
+
+    _step_metadata = (
+        shared_step.metadata if shared_step is not None else None
+    )
+    _sv_log_every = max(1, n_steps // 10)
+    _sv_t0 = time.time()
+
     for step in range(n_steps):
-        sv = Statevector(sv).evolve(step_qc).data
+        if shared_step is not None:
+            step_qc = shared_step
+            step_mat = shared_mat
+        else:
+            t_mid = (step + 0.5) * dt
+            V_n = potential_from_source(
+                source_fn, x, t_mid, nu, bc=bc,
+            )
+            step_qc = _build_step_sv(
+                q, nu, dt, L_box, bc, propagator,
+                encoding=encoding, V=V_n,
+                taylor_order=taylor_order,
+            )
+            _step_metadata = step_qc.metadata
+            if step == 0:
+                n_anc = step_qc.num_qubits - q
+                sv_dim_new = N * (1 << n_anc)
+                if sv_dim_new != len(sv):
+                    sv_new = np.zeros(sv_dim_new, dtype=complex)
+                    sv_new[:N] = sv[:N]
+                    sv = sv_new
+            if _use_dense:
+                step_mat = Operator(step_qc).data
+            else:
+                step_mat = None
+
+        if step_mat is not None:
+            sv = step_mat @ sv
+        else:
+            sv = Statevector(sv).evolve(step_qc).data
         p0 = float(np.sum(np.abs(sv[:N]) ** 2))
         p_success_total *= p0
         sv_proj = np.zeros_like(sv)
@@ -449,17 +746,292 @@ def run_cole_hopf_circuit_sv(
             sv_proj[:N] = sv[:N] / np.sqrt(p0)
         sv = sv_proj
 
+        if (
+            _use_dense
+            and ((step + 1) % _sv_log_every == 0
+                 or step == n_steps - 1)
+        ):
+            elapsed = time.time() - _sv_t0
+            print(
+                f"[cole_hopf_circuit_sv] step {step + 1}/{n_steps} "
+                f"p_success={p0:.4f} elapsed={elapsed:.1f}s",
+                file=sys.stderr, flush=True,
+            )
+
         step_metrics: dict[str, Any] = {
             "step": step + 1,
             "p_success_step": p0,
             "p_success_total": p_success_total,
         }
+        # Surface LCU normalization when present; informational for
+        # noise-budget tuning across (q, nu, dt, taylor_order).
+        if _step_metadata and "lcu_lambda" in _step_metadata:
+            step_metrics["lcu_lambda"] = (
+                _step_metadata["lcu_lambda"]
+            )
+            for k in ("lcu_lambda_heat", "lcu_s_max_V"):
+                if k in _step_metadata:
+                    step_metrics[k] = _step_metadata[k]
         metrics.append(step_metrics)
 
         if (step + 1) % snapshot_interval == 0 or step == n_steps - 1:
             snapshots.append(np.real(sv[:N]).copy())
 
     return snapshots, metrics
+
+
+# ── Shared shots helpers ─────────────────────────────────────────────
+
+
+def post_select_counts(
+    counts: dict[str, int],
+    q: int,
+) -> tuple[int, dict[str, int]]:
+    """Post-select on ancilla = all-zero; return (n_kept, data_counts)."""
+    n_kept = 0
+    data_counts: dict[str, int] = {}
+    for bitstring, count in counts.items():
+        data_bits = bitstring[:q]
+        anc_bits = bitstring[q:]
+        if all(c == "0" for c in anc_bits):
+            n_kept += count
+            data_counts[data_bits] = (
+                data_counts.get(data_bits, 0) + count
+            )
+    return n_kept, data_counts
+
+
+def reconstruct_phi_from_counts(
+    data_counts: dict[str, int],
+    n_kept: int,
+    N: int,
+    phi_norm: float,
+    p_success: float,
+) -> np.ndarray:
+    """Reconstruct phi amplitudes from post-selected data counts."""
+    phi_hat = np.zeros(N)
+    if n_kept > 0:
+        for data_bits_k, cnt in data_counts.items():
+            idx = int(data_bits_k, 2)
+            phi_hat[idx] = np.sqrt(cnt / n_kept)
+        phi_hat *= np.sqrt(p_success) * phi_norm
+    return phi_hat
+
+
+# ── Chunked shots driver ─────────────────────────────────────────────
+
+
+def _run_shots_chunked(
+    psi0: np.ndarray,
+    q: int,
+    nu: float,
+    dt: float,
+    snap_steps: list[int],
+    L_box: float,
+    phi_norm: float,
+    bc: str,
+    propagator: str,
+    shots: int,
+    chunk_size: int,
+    bond_dim: int | None = None,
+    encoding: str = "binary",
+    backend: Any = None,
+    backend_type: str = "sim",
+    backend_name: str | None = None,
+    optimization_level: int = 1,
+    seed: int | None = None,
+    source_fn=None,
+    x: np.ndarray | None = None,
+    taylor_order: int = 4,
+) -> list[tuple[np.ndarray, dict[str, Any]]]:
+    """Chunked evolution: K chunks of chunk_size steps each.
+
+    Between chunks, classically read out post-selected amplitudes
+    and re-prep as fresh IC.  No classical PDE physics — only
+    amplitude IO (decode counts -> re-encode via MPS prep).
+    """
+    if backend_type == "hardware":
+        raise NotImplementedError(
+            "chunked evolution v1: sim only; hardware "
+            "chunking deferred to v2"
+        )
+
+    from q8020_cfd_qutil.circuit import (
+        transpile_circuit,
+        execute_circuit_counts,
+    )
+    from burgers_mps import (
+        classical_to_mps, mps_to_circuit, normalize_state,
+    )
+
+    N = 1 << q
+    n_steps_total = max(snap_steps)
+    n_chunks = n_steps_total // chunk_size
+
+    psi_current, init_norm = normalize_state(psi0)
+    cumulative_norm = init_norm * phi_norm
+    snapshots: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
+
+    print(
+        f"[_run_shots_chunked] n_chunks={n_chunks} "
+        f"chunk_size={chunk_size} shots={shots}",
+        file=sys.stderr, flush=True,
+    )
+    t_total_start = time.time()
+
+    for chunk_idx in range(n_chunks):
+        t_chunk = time.time()
+        global_step_start = chunk_idx * chunk_size
+        t_start_chunk = global_step_start * dt
+
+        # 1. Build prep circuit from current amplitudes
+        tensors = classical_to_mps(
+            psi_current, bond_dim=bond_dim, canonical="right",
+        )
+        prep_qc = mps_to_circuit(tensors)
+        n_bond = prep_qc.num_qubits - q
+
+        # 2. Build chunk_size-step evolution circuit
+        T_chunk = dt * chunk_size
+        if propagator == "qft-diagonal":
+            full_qc = heat_qft_full_circuit(
+                q, nu, T_chunk, chunk_size, L_box, bc=bc,
+            )
+        elif propagator == "lcu":
+            full_qc = heat_lcu_full_circuit(
+                q, nu, T_chunk, chunk_size, L_box, bc=bc,
+                taylor_order=taylor_order,
+                source_fn=source_fn, x=x,
+                t_start=t_start_chunk,
+            )
+        else:
+            full_qc = heat_dense_block_full_circuit(
+                q, nu, T_chunk, chunk_size, L_box, bc=bc,
+                encoding=encoding,
+                source_fn=source_fn, x=x,
+                t_start=t_start_chunk,
+            )
+
+        n_heat_anc = full_qc.num_qubits - q
+        total_q = q + n_bond + n_heat_anc
+        heat_qubit_map = list(range(q)) + list(
+            range(q + n_bond, q + n_bond + n_heat_anc),
+        )
+
+        # 3. Compose
+        init_qc = QuantumCircuit(total_q)
+        init_qc.compose(
+            prep_qc, qubits=list(range(q + n_bond)),
+            inplace=True,
+        )
+        raw_qc = init_qc.compose(
+            full_qc, qubits=heat_qubit_map,
+        )
+        # Compose drops source metadata; carry forward (LCU lambda).
+        if full_qc.metadata:
+            raw_qc.metadata = dict(full_qc.metadata)
+
+        # 4. Transpile + execute
+        #    AerSimulator handles arbitrary gates (ControlledGate,
+        #    StatePreparation, UnitaryGate) natively.  Skipping
+        #    transpile avoids a Qiskit qs_decomposition segfault
+        #    on the multi-controlled SELECT gates in the LCU circuit.
+        try:
+            from qiskit_aer import AerSimulator as _Aer
+            _skip_transpile = (
+                isinstance(backend, _Aer)
+                and propagator == "lcu"
+            )
+        except ImportError:
+            _skip_transpile = False
+
+        print(
+            f"[_run_shots_chunked] chunk {chunk_idx + 1}/"
+            f"{n_chunks} steps "
+            f"{global_step_start+1}-"
+            f"{global_step_start+chunk_size} "
+            f"depth={raw_qc.depth()}"
+            f"{' (skip transpile — Aer+LCU)' if _skip_transpile else ' transpiling'} ...",
+            file=sys.stderr, flush=True,
+        )
+        if _skip_transpile:
+            qc_t = raw_qc
+            t_info = {
+                "wall_time": 0.0,
+                "optimization_level": optimization_level,
+                "skipped": "AerSimulator+LCU",
+            }
+        else:
+            qc_t, t_info = transpile_circuit(
+                raw_qc, backend,
+                optimization_level=optimization_level,
+                seed_transpiler=seed,
+            )
+        counts, exec_info = execute_circuit_counts(
+            qc_t, backend, shots=shots, seed=seed,
+        )
+
+        # 5. Post-select and reconstruct
+        n_kept, data_counts = post_select_counts(counts, q)
+        p_success = n_kept / shots if shots > 0 else 0.0
+
+        step_at_end = (chunk_idx + 1) * chunk_size
+
+        if n_kept == 0:
+            print(
+                f"[_run_shots_chunked] chunk {chunk_idx + 1}: "
+                f"ZERO post-selected counts; propagating NaN",
+                file=sys.stderr, flush=True,
+            )
+            psi_current = np.full(N, np.nan)
+            cumulative_norm = float("nan")
+        else:
+            # Reconstruct unit-norm amplitudes for re-prep
+            psi_new = np.zeros(N)
+            for data_bits_k, cnt in data_counts.items():
+                idx = int(data_bits_k, 2)
+                psi_new[idx] = np.sqrt(cnt / n_kept)
+            psi_norm_new = np.linalg.norm(psi_new)
+            if psi_norm_new > 1e-15:
+                psi_new /= psi_norm_new
+            cumulative_norm *= np.sqrt(p_success)
+            psi_current = psi_new
+
+        elapsed = time.time() - t_chunk
+        print(
+            f"[_run_shots_chunked] chunk {chunk_idx + 1}/"
+            f"{n_chunks} done in {elapsed:.1f}s "
+            f"p_success={p_success:.4f} "
+            f"cumulative_norm={cumulative_norm:.4e}",
+            file=sys.stderr, flush=True,
+        )
+
+        if step_at_end in snap_steps:
+            # Scale for output: phi = psi * cumulative_norm
+            phi_out = psi_current * cumulative_norm
+            met: dict[str, Any] = {
+                "shots": shots,
+                "n_kept": n_kept,
+                "p_success": p_success,
+                "n_steps": step_at_end,
+                "step": step_at_end,
+                "chunk_idx": chunk_idx,
+                "chunk_size": chunk_size,
+                "cumulative_norm": cumulative_norm,
+                "transpile": t_info,
+                "execute": exec_info,
+            }
+            if raw_qc.metadata and "lcu_lambda" in raw_qc.metadata:
+                met["lcu_lambda"] = raw_qc.metadata["lcu_lambda"]
+            snapshots[step_at_end] = (phi_out, met)
+
+    total_elapsed = time.time() - t_total_start
+    print(
+        f"[_run_shots_chunked] all {n_chunks} chunks "
+        f"done in {total_elapsed:.1f}s",
+        file=sys.stderr, flush=True,
+    )
+    return [snapshots[s] for s in snap_steps]
 
 
 # ── P5: Full u0 -> u(t) simulation pipeline ─────────────────────────
@@ -483,6 +1055,9 @@ def _run_shots_batch(
     backend_name: str | None = None,
     optimization_level: int = 1,
     seed: int | None = None,
+    source_fn=None,
+    x: np.ndarray | None = None,
+    taylor_order: int = 4,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Batch shots readout per spec §7 (P-C optimised).
 
@@ -516,29 +1091,53 @@ def _run_shots_batch(
     prep_qc = mps_to_circuit(tensors)
     n_bond = prep_qc.num_qubits - q
 
-    # Register layout: data [0..q-1] | bond [q..q+n_bond-1] | anc [q+n_bond]
-    total_q = q + n_bond + 1
-    heat_qubit_map = list(range(q)) + [q + n_bond]
-
     # --- Build all circuits -------------------------------------------
+    print(
+        f"[_run_shots_batch] building {len(snap_steps)} circuit(s) "
+        f"for snap_steps={list(snap_steps)} "
+        f"propagator={propagator} shots={shots}",
+        file=sys.stderr, flush=True,
+    )
+    t_build_start = time.time()
     raw_circs: list[QuantumCircuit] = []
+    total_q = None
     for s in snap_steps:
         if propagator == "qft-diagonal":
             full_qc = heat_qft_full_circuit(
                 q, nu, dt * s, s, L_box, bc=bc,
             )
+        elif propagator == "lcu":
+            full_qc = heat_lcu_full_circuit(
+                q, nu, dt * s, s, L_box, bc=bc,
+                taylor_order=taylor_order,
+                source_fn=source_fn, x=x,
+            )
         else:
             full_qc = heat_dense_block_full_circuit(
                 q, nu, dt * s, s, L_box, bc=bc,
                 encoding=encoding,
+                source_fn=source_fn, x=x,
             )
+        n_heat_anc = full_qc.num_qubits - q
+        total_q = q + n_bond + n_heat_anc
+        heat_qubit_map = list(range(q)) + list(
+            range(q + n_bond, q + n_bond + n_heat_anc),
+        )
         init_qc = QuantumCircuit(total_q)
         init_qc.compose(
             prep_qc, qubits=list(range(q + n_bond)), inplace=True,
         )
-        raw_circs.append(
-            init_qc.compose(full_qc, qubits=heat_qubit_map),
-        )
+        raw_qc = init_qc.compose(full_qc, qubits=heat_qubit_map)
+        # Compose drops source metadata; carry it forward explicitly.
+        if full_qc.metadata:
+            raw_qc.metadata = dict(full_qc.metadata)
+        raw_circs.append(raw_qc)
+    print(
+        f"[_run_shots_batch] built {len(raw_circs)} circuit(s) in "
+        f"{time.time() - t_build_start:.1f}s "
+        f"(total qubits={total_q})",
+        file=sys.stderr, flush=True,
+    )
 
     # --- Hardware-async: fire-and-record, return placeholders ----------
     if backend_type == "hardware":
@@ -575,28 +1174,58 @@ def _run_shots_batch(
 
     # --- Transpile + execute each circuit via qutil --------------------
     results: list[tuple[np.ndarray, dict[str, Any]]] = []
-    for raw_qc, s in zip(raw_circs, snap_steps):
-        qc_t, t_info = transpile_circuit(
-            raw_qc, backend,
-            optimization_level=optimization_level,
-            seed_transpiler=seed,
+    for idx, (raw_qc, s) in enumerate(zip(raw_circs, snap_steps)):
+        print(
+            f"[_run_shots_batch] circuit {idx + 1}/{len(raw_circs)} "
+            f"snap_step={s} raw depth={raw_qc.depth()} "
+            f"size={raw_qc.size()} transpiling "
+            f"(opt_level={optimization_level}) ...",
+            file=sys.stderr, flush=True,
         )
+        try:
+            from qiskit_aer import AerSimulator as _Aer
+            _skip_transpile = (
+                isinstance(backend, _Aer)
+                and propagator == "lcu"
+            )
+        except ImportError:
+            _skip_transpile = False
+
+        t_tr = time.time()
+        if _skip_transpile:
+            qc_t = raw_qc
+            t_info = {
+                "wall_time": 0.0,
+                "optimization_level": optimization_level,
+                "skipped": "AerSimulator+LCU",
+            }
+        else:
+            qc_t, t_info = transpile_circuit(
+                raw_qc, backend,
+                optimization_level=optimization_level,
+                seed_transpiler=seed,
+            )
+        print(
+            f"[_run_shots_batch] transpile "
+            f"{'skipped (Aer+LCU)' if _skip_transpile else 'done'}"
+            f" in {time.time() - t_tr:.1f}s; depth="
+            f"{qc_t.depth()} size={qc_t.size()}; "
+            f"running shots={shots} ...",
+            file=sys.stderr, flush=True,
+        )
+        t_ex = time.time()
         counts, exec_info = execute_circuit_counts(
             qc_t, backend, shots=shots, seed=seed,
         )
+        print(
+            f"[_run_shots_batch] execute done in "
+            f"{time.time() - t_ex:.1f}s; "
+            f"unique outcomes={len(counts)}",
+            file=sys.stderr, flush=True,
+        )
 
-        # Post-select: slice by position (no .split())
-        n_kept = 0
-        data_counts: dict[str, int] = {}
-        for bitstring, count in counts.items():
-            data_bits = bitstring[:q]
-            anc_bits = bitstring[q:]
-            if all(c == "0" for c in anc_bits):
-                n_kept += count
-                data_counts[data_bits] = (
-                    data_counts.get(data_bits, 0) + count
-                )
-
+        # Post-select and reconstruct
+        n_kept, data_counts = post_select_counts(counts, q)
         p_success = n_kept / shots if shots > 0 else 0.0
         if p_success < 0.3:
             print(
@@ -605,13 +1234,9 @@ def _run_shots_batch(
                 f"reduce n_steps",
                 file=sys.stderr, flush=True,
             )
-
-        phi_hat = np.zeros(N)
-        if n_kept > 0:
-            for data_bits_k, cnt in data_counts.items():
-                idx = int(data_bits_k, 2)
-                phi_hat[idx] = np.sqrt(cnt / n_kept)
-            phi_hat *= np.sqrt(p_success) * phi_norm
+        phi_hat = reconstruct_phi_from_counts(
+            data_counts, n_kept, N, phi_norm, p_success,
+        )
 
         met: dict[str, Any] = {
             "shots": shots,
@@ -622,6 +1247,9 @@ def _run_shots_batch(
             "transpile": t_info,
             "execute": exec_info,
         }
+        # Surface LCU normalization when the propagator is LCU.
+        if raw_qc.metadata and "lcu_lambda" in raw_qc.metadata:
+            met["lcu_lambda"] = raw_qc.metadata["lcu_lambda"]
         results.append((phi_hat, met))
 
     return results
@@ -644,6 +1272,11 @@ def run_cole_hopf_circuit_simulation(
     backend_name: str | None = None,
     optimization_level: int = 1,
     seed: int | None = None,
+    source_fn=None,
+    evolution_mode: str = "single",
+    chunk_size: int = 10,
+    phi_modes: int = 0,
+    taylor_order: int = 4,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
 
@@ -662,6 +1295,7 @@ def run_cole_hopf_circuit_simulation(
         cole_hopf_forward,
         cole_hopf_forward_centered,
         cole_hopf_inverse,
+        fourier_low_pass_phi,
         log_phi_to_normalized_psi,
         _should_center,
     )
@@ -677,6 +1311,23 @@ def run_cole_hopf_circuit_simulation(
         raise NotImplementedError(
             "qft-diagonal requires periodic BC; "
             "use --propagator dense-block for --bc dirichlet"
+        )
+
+    # Source guard: V is position-diagonal, L is Fourier-diagonal;
+    # they don't share an eigenbasis.
+    if source_fn is not None and propagator not in (
+        "dense-block", "lcu",
+    ):
+        raise NotImplementedError(
+            "Source forcing requires --propagator dense-block "
+            "or lcu in this release. qft-diagonal+source is "
+            "on the roadmap."
+        )
+
+    # LCU requires periodic BC in v1.
+    if propagator == "lcu" and phi_bc != "periodic":
+        raise NotImplementedError(
+            "LCU propagator requires periodic BC in v1"
         )
 
     # Encoding guard: QFT diagonalises L only in binary basis.
@@ -708,7 +1359,6 @@ def run_cole_hopf_circuit_simulation(
         psi0 = phi0 / phi_norm
 
     # Permute psi0 from grid order to encoded order for circuit prep.
-    from burgers_encoding import permute_to_encoding
     psi0 = permute_to_encoding(psi0, q, encoding)
 
     print(
@@ -719,34 +1369,76 @@ def run_cole_hopf_circuit_simulation(
     )
 
     if shots > 0:
-        # Shots path: batch build + single transpile (P-C).
         nan_fill = np.full_like(u0, np.nan)
-        solutions: list[np.ndarray] = [u0.copy()] + [nan_fill] * n_steps
+        solutions: list[np.ndarray] = (
+            [u0.copy()] + [nan_fill] * n_steps
+        )
         all_metrics: list[dict[str, Any]] = []
         snap_steps = list(range(
             snapshot_interval, n_steps + 1, snapshot_interval,
         ))
         if n_steps not in snap_steps:
             snap_steps.append(n_steps)
-        batch_results = _run_shots_batch(
-            psi0, q, nu, dt, snap_steps, L_box, phi_norm,
-            bc=phi_bc, propagator=propagator, shots=shots,
-            bond_dim=bond_dim, encoding=encoding,
-            backend=backend, backend_type=backend_type,
-            backend_name=backend_name,
-            optimization_level=optimization_level, seed=seed,
-        )
-        from burgers_encoding import permute_from_encoding
+
+        if evolution_mode == "chunked":
+            # Validate alignment
+            if n_steps % chunk_size != 0:
+                raise ValueError(
+                    f"chunked mode requires n_steps ({n_steps}) "
+                    f"divisible by chunk_size ({chunk_size})"
+                )
+            bad = [s for s in snap_steps
+                   if s % chunk_size != 0]
+            if bad:
+                raise ValueError(
+                    f"chunked mode: snap_steps {bad} not "
+                    f"aligned to chunk_size={chunk_size}; "
+                    f"set --save-every to a multiple of "
+                    f"--chunk-size"
+                )
+            batch_results = _run_shots_chunked(
+                psi0, q, nu, dt, snap_steps, L_box,
+                phi_norm,
+                bc=phi_bc, propagator=propagator,
+                shots=shots, chunk_size=chunk_size,
+                bond_dim=bond_dim, encoding=encoding,
+                backend=backend, backend_type=backend_type,
+                backend_name=backend_name,
+                optimization_level=optimization_level,
+                seed=seed,
+                source_fn=source_fn, x=x,
+                taylor_order=taylor_order,
+            )
+        else:
+            batch_results = _run_shots_batch(
+                psi0, q, nu, dt, snap_steps, L_box,
+                phi_norm,
+                bc=phi_bc, propagator=propagator,
+                shots=shots,
+                bond_dim=bond_dim, encoding=encoding,
+                backend=backend, backend_type=backend_type,
+                backend_name=backend_name,
+                optimization_level=optimization_level,
+                seed=seed,
+                source_fn=source_fn, x=x,
+                taylor_order=taylor_order,
+            )
+
         for (phi_hat, met), s in zip(batch_results, snap_steps):
             phi_hat = permute_from_encoding(
                 phi_hat, q, encoding,
             )
+            if phi_modes > 0:
+                phi_hat = fourier_low_pass_phi(
+                    phi_hat, phi_modes,
+                )
             u_snap = cole_hopf_inverse(phi_hat, dx, nu)
             solutions[s] = u_snap
             all_metrics.append(met)
             if s % max(1, n_steps // 5) == 0 or s == n_steps:
                 print(
-                    f"[cole_hopf_circuit] shots step {s}/{n_steps} "
+                    f"[cole_hopf_circuit] shots step "
+                    f"{s}/{n_steps} "
                     f"P_success={met['p_success']:.3f}",
                     file=sys.stderr, flush=True,
                 )
@@ -758,6 +1450,8 @@ def run_cole_hopf_circuit_simulation(
         bc=phi_bc, propagator=propagator,
         snapshot_interval=snapshot_interval,
         bond_dim=bond_dim, encoding=encoding,
+        source_fn=source_fn, x=x,
+        taylor_order=taylor_order,
     )
 
     # Build snapshot step indices (mirrors run_cole_hopf_circuit_sv)
@@ -768,7 +1462,6 @@ def run_cole_hopf_circuit_simulation(
 
     # Full-length solutions list indexed by step number (NaN-fill
     # for non-snapshot steps, matching the shots-path convention).
-    from burgers_encoding import permute_from_encoding
     nan_fill = np.full_like(u0, np.nan)
     solutions: list[np.ndarray] = (
         [u0.copy()] + [nan_fill] * n_steps

@@ -884,28 +884,7 @@ requires-dist = [
 ]
 
 [[package]]
-name = "q8020-cfd-qutil"
-version = "0.1.0"
-source = { editable = "../q8020/q8020-cfd-qutil" }
-dependencies = [
-    { name = "numpy" },
-    { name = "q8020-cfd-metautil" },
-    { name = "qiskit" },
-    { name = "qiskit-aer" },
-    { name = "qiskit-ibm-runtime" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy" },
-    { name = "q8020-cfd-metautil", editable = "../q8020/q8020-cfd-metautil" },
-    { name = "qiskit", specifier = ">=2.0,<3.0" },
-    { name = "qiskit-aer" },
-    { name = "qiskit-ibm-runtime" },
-]
-
-[[package]]
-name = "qcfd-mps-burgers"
+name = "q8020-cfd-mps-burgers"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -933,6 +912,27 @@ requires-dist = [
     { name = "qiskit-aer" },
     { name = "quimb" },
     { name = "scipy" },
+]
+
+[[package]]
+name = "q8020-cfd-qutil"
+version = "0.1.0"
+source = { editable = "../q8020/q8020-cfd-qutil" }
+dependencies = [
+    { name = "numpy" },
+    { name = "q8020-cfd-metautil" },
+    { name = "qiskit" },
+    { name = "qiskit-aer" },
+    { name = "qiskit-ibm-runtime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "q8020-cfd-metautil", editable = "../q8020/q8020-cfd-metautil" },
+    { name = "qiskit", specifier = ">=2.0,<3.0" },
+    { name = "qiskit-aer" },
+    { name = "qiskit-ibm-runtime" },
 ]
 
 [[package]]

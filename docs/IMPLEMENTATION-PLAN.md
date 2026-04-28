@@ -200,14 +200,14 @@ F2.  Time-evolving block decimation (TEBD, Ref. 30)
      avoid the Pauli decomposition entirely. Not implemented.
 
 F3.  LCU SELECT/PREPARE circuit
-     Our code implements the Pauli coefficient solve (Eq. 16) and
-     Hamiltonian construction. What we do NOT yet implement is the
-     LCU circuit itself -- the ancilla-based SELECT/PREPARE protocol
-     that efficiently applies the sum of unitaries without chaining
-     all 4^q rotations sequentially. The shift operator circuits in
-     burgers_mpo.py (increment, decrement, gradient_lcu, laplacian_lcu)
-     would become the controlled unitaries inside the SELECT oracle.
-     This is the key to scaling beyond q=8.
+     **Status: Variant 1.B implemented** (pure-quantum CH-LCU).
+     `burgers_lcu.py` provides generic `build_select_circuit`,
+     `build_prepare_circuit`, `lcu_block_encoding`, plus a Taylor-
+     expansion LCU for the heat propagator (`heat_lcu_step_circuit`).
+     Wired into `cole_hopf_circuit` as `--propagator lcu` with
+     `--lcu-taylor-order`.  Variant 1.A (`lcu_circuit` method) is
+     deferred.  See [SPEC-F3-LCU-method.md](SPEC-F3-LCU-method.md)
+     for full design.  Tests in `tests/test_lcu.py`.
 
 F4.  Variational fast-forwarding (Appendix A.B, Refs. 31, 34, 35)
      Compresses M time steps into a single circuit of fixed depth:

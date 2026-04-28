@@ -5,8 +5,8 @@ conversations.
 
 ## 0. Context
 
-`qcfd-mps-burgers` is a standalone Burgers / Cole-Hopf quantum-circuit
-pipeline at `/Users/agallojr/proj/src/qcfd-mps-burgers/`. Three
+`q8020-mps-burgers` is a standalone Burgers / Cole-Hopf quantum-circuit
+pipeline at `/Users/agallojr/proj/src/q8020-mps-burgers/`. Three
 sibling repos provide reused infrastructure (registered as workspace
 members of `/Users/agallojr/proj/src/q8020/`):
 
@@ -87,7 +87,7 @@ Across all three modes, the pipeline:
 ## 3. Non-goals
 
 - Refactoring methods other than `cole_hopf_circuit`. The
-  qcfd-mps-burgers repo carries other methods that work fine today
+  q8020-mps-burgers repo carries other methods that work fine today
   with the qutil factory — do not touch them.
 - Error mitigation (TREX, ZNE, dynamical decoupling) — separate spec
   if/when needed.
@@ -432,7 +432,7 @@ extra plumbing.
 ## 6. q8020 TOML cases
 
 Add three smoke cases to
-`qcfd-mps-burgers/input/burgers_quantum.toml` to validate each
+`q8020-mps-burgers/input/burgers_quantum.toml` to validate each
 backend mode end-to-end (numbers chosen to keep wall time low):
 
 ```toml
@@ -471,7 +471,7 @@ for this parcel) — needs IBM credentials and a deliberate run.
 
 ## 7. Tests
 
-Two test files. Most go in `qcfd-mps-burgers/tests/`, but the joint-
+Two test files. Most go in `q8020-mps-burgers/tests/`, but the joint-
 counts helper lives in qutil so its test belongs there.
 
 ### 7a. In `q8020-cfd-qutil/src/q8020_cfd_qutil/test_circuit_joint.py`
@@ -498,7 +498,7 @@ counts helper lives in qutil so its test belongs there.
    backend=FakeManilaV2 via SamplerV2. Counts must be
    byte-identical (V2 honours seed_simulator on fake backends).
 
-### 7b. In `qcfd-mps-burgers/tests/test_shots_backend.py`
+### 7b. In `q8020-mps-burgers/tests/test_shots_backend.py`
 
 5. **`test_cole_hopf_shots_ideal_sim_no_regression`** — Run the
    pre-change shots path at q=3, shots=2048, backend_type=sim,
@@ -529,7 +529,7 @@ Manual smoke documented in `docs/HARDWARE.md` (separate parcel).
 ## 8. Acceptance
 
 - All three §6 TOML cases run cleanly via q8020 from
-  `qcfd-mps-burgers/`.
+  `q8020-mps-burgers/`.
 - All five §7 tests pass.
 - For the noisy-sim case, `analysis.json` contains
   `t1`, `t2`, `backend_name=manila`, `backend_type=sim`,
@@ -612,5 +612,5 @@ count. Single-creg callers see no space to strip — no-op. Documented
 in the function docstring.
 
 **Migration:** none required. axequalsb continues to work unchanged.
-`qcfd-mps-burgers` `_run_shots_batch` slices
+`q8020-mps-burgers` `_run_shots_batch` slices
 `data_bits = bitstring[:q]; anc_bits = bitstring[q:]`.

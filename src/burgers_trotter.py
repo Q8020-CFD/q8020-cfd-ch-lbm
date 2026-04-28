@@ -675,6 +675,9 @@ def run_simulation(
     coupling_map: str = "default",
     optimization_level: int = 1,
     seed: int | None = None,
+    evolution_mode: str = "single",
+    chunk_size: int = 10,
+    phi_modes: int = 0,
 ) -> tuple[list[np.ndarray], list[dict] | None]:
     """Run multi-step Burgers simulation.
 
@@ -734,6 +737,10 @@ def run_simulation(
             backend_name=backend_name,
             optimization_level=optimization_level,
             seed=seed,
+            source_fn=source_fn,
+            evolution_mode=evolution_mode,
+            chunk_size=chunk_size,
+            phi_modes=phi_modes,
         )
         return sols, mets
 

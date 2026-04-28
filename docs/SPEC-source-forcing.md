@@ -5,8 +5,8 @@ conversations.
 
 ## 0. Context
 
-`qcfd-mps-burgers` is a Cole-Hopf quantum-circuit pipeline for 1D
-Burgers. Source code at `/Users/agallojr/proj/src/qcfd-mps-burgers/`.
+`q8020-mps-burgers` is a Cole-Hopf quantum-circuit pipeline for 1D
+Burgers. Source code at `/Users/agallojr/proj/src/q8020-mps-burgers/`.
 The `cole_hopf_circuit` method today silently drops the `--source`
 flag at the dispatch in
 [burgers_trotter.py:713-720](../src/burgers_trotter.py:713) — it
@@ -314,7 +314,7 @@ Add a sibling to the existing sine-wave case in
 "--backend-type" = "sim"
 "--seed" = 42
 "--save-every" = 1
-"_group_postproc" = "python ./qcfd-mps-burgers/docs/plot_cole_hopf_circuit_evolution.py"
+"_group_postproc" = "python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolution.py"
 ```
 
 Smoke target: `final_error < 0.05` (vs ~0.21 today on the broken-

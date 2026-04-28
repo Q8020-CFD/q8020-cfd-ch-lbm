@@ -158,6 +158,25 @@ def cole_hopf_inverse_centered(
     return -2.0 * nu * dlog
 
 
+def fourier_low_pass_phi(
+    phi: np.ndarray,
+    n_modes: int,
+) -> np.ndarray:
+    """Low-pass filter phi by keeping only the first n_modes Fourier modes.
+
+    Zeroes out high-frequency components that are dominated by shot
+    noise, before the log-derivative in cole_hopf_inverse amplifies
+    them.  n_modes=0 means no filtering (return as-is).
+    """
+    if n_modes <= 0:
+        return phi
+    N = len(phi)
+    n_modes = min(n_modes, N // 2)
+    fk = np.fft.rfft(phi)
+    fk[n_modes + 1:] = 0.0
+    return np.fft.irfft(fk, n=N)
+
+
 def _should_center(u: np.ndarray, dx: float, nu: float) -> bool:
     """Decide whether to use centered exponent for the CH transform.
 

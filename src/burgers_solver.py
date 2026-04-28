@@ -27,13 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from q8020_cfd_metautil.args import add_standard_quantum_args
-from q8020_cfd_metautil.meta_fragment import (
-    make_case_meta,
-    write_case,
-    write_results,
-    write_analysis,
-    write_artifacts,
-)
 
 from burgers_classical import (
     initial_condition_sine,
@@ -41,7 +34,10 @@ from burgers_classical import (
     source_term_sine,
     solve_burgers,
 )
-from burgers_trotter import run_simulation, compute_error
+from burgers_fw import BurgersConfig, run_simulation_fw
+from burgers_postprocess import BurgersPostProcessor
+from burgers_trotter import compute_error
+from q8020_cfd_metautil.solverfw import Grid1D
 
 
 # *****************************************************************************
@@ -123,7 +119,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--propagator", type=str, default="qft-diagonal",
-        choices=["qft-diagonal", "dense-block"],
+        choices=["qft-diagonal", "dense-block", "lcu"],
         help="Heat propagator variant (cole_hopf_circuit only)",
     )
     parser.add_argument(
@@ -153,6 +149,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mps-threshold", type=float, default=0.0,
         help="MPS singular value truncation threshold (mps method only)",
+    )
+
+    # Shots post-processing
+    parser.add_argument(
+        "--phi-modes", type=int, default=0,
+        help="Fourier low-pass: keep N modes in phi before "
+             "inverse CH (0=no filter, shots path only)",
+    )
+
+    # Chunked evolution
+    parser.add_argument(
+        "--evolution-mode", type=str, default="single",
+        choices=["single", "chunked"],
+        help="Evolution mode (cole_hopf_circuit shots only)",
+    )
+    parser.add_argument(
+        "--chunk-size", type=int, default=10,
+        help="Steps per chunk (chunked mode only)",
+    )
+    parser.add_argument(
+        "--lcu-taylor-order", type=int, default=4,
+        help="Taylor truncation order for LCU propagator",
     )
 
     # Reporting
@@ -231,30 +249,40 @@ if __name__ == "__main__":
     t_classical = time.time() - t0
     print(f"[burgers] classical done {t_classical:.2f}s", file=sys.stderr, flush=True)
 
-    # Run selected method
-    print(f"[burgers] running method={args.method} ...", file=sys.stderr, flush=True)
-    t0 = time.time()
-    sols_method, step_metrics = run_simulation(
-        u0, x, nu, dt, n_steps,
-        source_fn=source_fn,
+    # Build solverfw config and grid
+    grid = Grid1D.from_qubits(q, bc=args.bc)
+    fw_config = BurgersConfig(
+        q=q, nu=nu, cfl=args.cfl,
+        dt=dt, n_steps=n_steps, bc=args.bc,
         method=args.method,
+        ic=args.ic, source=args.source,
         trotter_order=args.trotter_order,
         trotter_reps=args.trotter_reps,
         bond_dim=args.bond_dim,
         mps_threshold=args.mps_threshold,
         shots=args.shots,
         backend_name=args.backend,
-        t1=args.t1,
-        t2=args.t2,
-        bc=args.bc,
-        sign_recovery=args.sign_recovery,
-        propagator=args.propagator,
-        snapshot_interval=max(1, args.save_every),
-        encoding=args.encoding,
         backend_type=args.backend_type,
         coupling_map=args.coupling_map,
         optimization_level=args.optimization_level,
         seed=args.seed,
+        t1=args.t1, t2=args.t2,
+        sign_recovery=args.sign_recovery,
+        propagator=args.propagator,
+        encoding=args.encoding,
+        evolution_mode=args.evolution_mode,
+        chunk_size=args.chunk_size,
+        phi_modes=args.phi_modes,
+        taylor_order=args.lcu_taylor_order,
+        save_every=args.save_every,
+        shock_pct=shock_pct,
+    )
+
+    # Run selected method via solverfw
+    print(f"[burgers] running method={args.method} ...", file=sys.stderr, flush=True)
+    t0 = time.time()
+    sols_method, step_metrics = run_simulation_fw(
+        fw_config, grid, u0, source_fn=source_fn,
     )
     t_method = time.time() - t0
     print(f"[burgers] method done {t_method:.2f}s", file=sys.stderr, flush=True)
@@ -267,11 +295,15 @@ if __name__ == "__main__":
     else:
         save_steps = [0, n_steps]
 
-    errors = {step: compute_error(sols_method[step], sols_classical[step])
-              for step in save_steps}
+    errors = {}
+    for step in save_steps:
+        u_m = sols_method[step]
+        if not np.all(np.isfinite(u_m)):
+            continue
+        errors[step] = compute_error(u_m, sols_classical[step])
 
-    final_error = errors[n_steps]
-    max_error = max(errors.values())
+    final_error = errors.get(n_steps, float("nan"))
+    max_error = max(errors.values()) if errors else float("nan")
 
     print(
         f"[burgers] final_error={final_error:.4e} max_error={max_error:.4e}",
@@ -279,128 +311,33 @@ if __name__ == "__main__":
     )
 
     # *******************************************************************************
-    # Write metadata fragments
+    # Write metadata fragments via PostProcessor
 
     outdir = Path(args.outdir) if args.outdir else Path.cwd()
     exp_id = args.experiment_id
 
-    # Case fragment: problem definition
-    case_data = make_case_meta(
-        name="burgers_1d",
-        q=q,
-        N=N,
-        nu=nu,
-        dx=float(dx),
-        dt=float(dt),
-        cfl=args.cfl,
-        n_steps=n_steps,
-        shock_pct=shock_pct,
-        ic=args.ic,
-        ic_modes=args.ic_modes if args.ic == "multimode" else None,
-        ic_seed=args.ic_seed if args.ic == "multimode" else None,
-        ic_alpha=args.ic_alpha if args.ic == "multimode" else None,
-        source=args.source,
-        method=args.method,
-        trotter_order=args.trotter_order,
-        trotter_reps=args.trotter_reps,
-        bond_dim=args.bond_dim,
-        mps_threshold=args.mps_threshold,
-        shots=args.shots,
-        backend_name=args.backend,
-        t1=args.t1,
-        t2=args.t2,
-        bc=args.bc,
-        sign_recovery=args.sign_recovery,
-        backend_type=args.backend_type,
-        coupling_map=args.coupling_map,
-        optimization_level=args.optimization_level,
-        seed=args.seed,
+    post = BurgersPostProcessor(
+        classical_solutions=sols_classical,
+        source_fn=source_fn,
+        x=x,
+        output_dir=outdir,
+        experiment_id=exp_id,
+        save_steps=save_steps,
     )
-    write_case(outdir, case_data, experiment_id=exp_id)
-
-    # Results fragment: solution data
-    results_data = {
-        "u_initial": u0.tolist(),
-        "u_final_classical": np.array(sols_classical[-1]).real.tolist(),
-        "u_final_method": np.array(sols_method[-1]).real.tolist(),
-        "errors_by_step": {str(k): v for k, v in errors.items()},
-        "final_error": final_error,
-        "max_error": max_error,
-    }
-    write_results(outdir, results_data, experiment_id=exp_id)
-
-    # Analysis fragment: error metrics and timing
-    analysis_data = {
-        "final_error_epsilon": final_error,
-        "max_error_epsilon": max_error,
-        "classical_wall_time_s": t_classical,
-        "method_wall_time_s": t_method,
-        "speedup_ratio": t_classical / max(t_method, 1e-9),
-        "n_pauli_terms": None,
-        "shots": args.shots,
-        "t1": args.t1,
-        "t2": args.t2,
-        "backend_name": args.backend,
-        "backend_type": args.backend_type,
-        "coupling_map": args.coupling_map,
-        "optimization_level": args.optimization_level,
-        "seed": args.seed,
-    }
-    if args.method != "shift":
-        from burgers_nonlinear import build_evolution_hamiltonian
-        g0 = source_fn(x, 0) if source_fn is not None else None
-        H = build_evolution_hamiltonian(u0, dx, dt, nu, g0)
-        analysis_data["n_pauli_terms"] = len(H)
+    # Feed step metrics collected during simulation
     if step_metrics:
-        n = len(step_metrics)
-        analysis_data["total_pauli_decomp_time"] = sum(m.get("pauli_decomp_time_s", 0) for m in step_metrics)
-        analysis_data["total_circuit_construction_time"] = sum(m.get("circuit_construction_time_s", 0) for m in step_metrics)
-        analysis_data["total_transpilation_time"] = sum(m.get("transpilation_time_s", 0) for m in step_metrics)
-        analysis_data["total_execution_time"] = sum(m.get("execution_time_s", 0) for m in step_metrics)
-        depths = [m["circuit_depth"] for m in step_metrics if "circuit_depth" in m]
-        analysis_data["avg_circuit_depth"] = sum(depths) / len(depths) if depths else None
-        gate_totals = [sum(m["gate_counts"].values()) for m in step_metrics if "gate_counts" in m]
-        analysis_data["avg_gate_count"] = sum(gate_totals) / len(gate_totals) if gate_totals else None
-        analysis_data["avg_cx_gates"] = sum(m["gate_counts"].get("cx", 0) for m in step_metrics if "gate_counts" in m) / n
-        analysis_data["n_qubits"] = step_metrics[0].get("n_qubits") if step_metrics else None
-        analysis_data["sign_recovery"] = step_metrics[0].get("sign_recovery", "none")
-        analysis_data["per_step_metrics"] = step_metrics
-    write_analysis(outdir, analysis_data, experiment_id=exp_id)
+        post.step_metrics = step_metrics
 
-    # Artifacts fragment: grid and solution snapshots
-    artifacts_data = {
-        "grid": x.tolist(),
-        "solution_steps": {str(s): np.array(sols_method[s]).real.tolist() for s in save_steps},
-    }
-    write_artifacts(outdir, artifacts_data, experiment_id=exp_id)
+    summary = post.write_fragments(
+        config=fw_config,
+        u0=u0,
+        solutions=sols_method,
+        t_classical=t_classical,
+        t_method=t_method,
+        args=args,
+    )
 
     # JSON summary to stdout (harvested by sweeper)
-    summary = {
-        "experiment_id": exp_id,
-        "algorithm": f"burgers_{args.method}",
-        "q": q,
-        "N": N,
-        "nu": nu,
-        "n_steps": n_steps,
-        "shock_pct": shock_pct,
-        "ic": args.ic,
-        "ic_modes": args.ic_modes if args.ic == "multimode" else None,
-        "ic_seed": args.ic_seed if args.ic == "multimode" else None,
-        "ic_alpha": args.ic_alpha if args.ic == "multimode" else None,
-        "method": args.method,
-        "bc": args.bc,
-        "trotter_order": args.trotter_order,
-        "trotter_reps": args.trotter_reps,
-        "shots": args.shots,
-        "t1": args.t1,
-        "t2": args.t2,
-        "backend_name": args.backend,
-        "final_error": final_error,
-        "max_error": max_error,
-        "classical_time_s": t_classical,
-        "method_time_s": t_method,
-        "exit_code": 0,
-    }
     print(json.dumps(summary, indent=2))
 
     sys.exit(0)
