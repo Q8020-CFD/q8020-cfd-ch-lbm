@@ -58,6 +58,17 @@ def _extract_case_params(meta: dict) -> dict | None:
     return cases[0]
 
 
+def _load_group_params(sweep_dir: Path) -> dict:
+    """Read --params from the _group_postproc_*.json in sweep_dir."""
+    import glob as _glob
+    jsons = _glob.glob(str(sweep_dir / "_group_postproc_*.json"))
+    if jsons:
+        with open(jsons[0], encoding="utf-8") as f:
+            gp = json.load(f)
+        return gp.get("params", {})
+    return {}
+
+
 def _load_cases_from_sweep(sweep_dir: Path) -> list[dict]:
     case_dirs, no_meta = _walk_case_dirs(sweep_dir)
     out = []
@@ -118,12 +129,14 @@ def main() -> None:
             pp = json.load(f)
         run_dir = Path(pp["run_dir"])
         all_cases = _load_cases_from_sweep(run_dir)
+        group_params = _load_group_params(run_dir)
         outfile = args.outfile or str(
             run_dir / "cole_hopf_circuit_smoothed.gif",
         )
     elif args.sweep_dir:
         sd = args.sweep_dir.expanduser().resolve()
         all_cases = _load_cases_from_sweep(sd)
+        group_params = _load_group_params(sd)
         outfile = args.outfile or str(
             sd / "cole_hopf_circuit_smoothed.gif",
         )
@@ -247,7 +260,10 @@ def main() -> None:
     ymax = max(_fmax(fs) for fs in all_frames) * 1.15
 
     q_val = anchor_meta.get("q", "?")
-    propagator = anchor_meta.get("propagator", "qft-diagonal")
+    propagator = (
+        anchor_meta.get("propagator")
+        or group_params.get("--propagator", "qft-diagonal")
+    )
     shots = anchor_meta.get("shots", 0)
     shots_label = (
         f"{int(shots) // 1000}k shots" if shots else "statevector"
