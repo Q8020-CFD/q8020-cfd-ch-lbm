@@ -828,3 +828,182 @@ _group_postproc = ["python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolu
 "--chunk-size" = 10
 _group_postproc = ["python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolution.py"]
 
+# ── Paper-scale Dirichlet BC + dense-block method ────────────────────────────
+# Statevector (q=5..7) and 150k-shot (q=5..6) runs.
+# dense-block handles Dirichlet via Neumann-on-phi; nu=0.01 keeps phi
+# well-conditioned; n_steps=50 gives a fixed short time horizon.
+
+[dirichlet_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--save-every" = 8
+
+[dirichlet_q6]
+"--q" = 6
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--save-every" = 16
+
+[dirichlet_q7]
+"--q" = 7
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--save-every" = 16
+
+[dirichlet_shots_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--shots" = 150000
+"--save-every" = 8
+
+[dirichlet_shots_q6]
+"--q" = 6
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--shots" = 150000
+"--save-every" = 16
+
+# ── F2 Phase B.1 TEBD-circuit fast runs (n-steps=10, nu=1e-2) ────────────────
+# Names differ from tebd_q4/tebd_q5 (tebd method) and tebd_circuit_q4
+# (shock-pct=100 run) to avoid TOML duplicate-key errors.
+
+[tebd_circuit_fast_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 2
+
+[tebd_circuit_fast_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 4
+
+[tebd_circuit_strang_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--splitting" = "strang"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 2
+
+[tebd_circuit_strang_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--splitting" = "strang"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 4
+
+# ── F10-10 MPS bond-dim sweep (statevector) ──────────────────────────────────
+# chi = bond dimension; q=4 (N=16) and q=5 (N=32).
+# Dirichlet BC, nu=1e-2 (stable forward transform), no source, n-steps=5.
+# Acceptance: all runs complete without error; fidelity tested by F10-11.
+
+[mps_bond_q4_chi4]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 4
+"--noshow" = true
+
+[mps_bond_q4_chi8]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 8
+"--noshow" = true
+
+[mps_bond_q5_chi4]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 4
+"--noshow" = true
+
+[mps_bond_q5_chi8]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 8
+"--noshow" = true
+
+# ── Pure quantum pathway comparison (q=5, Dirichlet, unforced) ──────────────
+# Matched pair: same IC, BC, nu, grid, time horizon.  Differs only in algorithm.
+# Run both, then the postproc overlays them + classical FTCS reference.
+# nu=1e-2 keeps Cole-Hopf forward transform well-conditioned.
+# save-every=1 for full movie.  shock-pct=100 → T_end ≈ t_shock.
+
+[pq_compare_q5_trotter]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "dirichlet"
+"--source" = "none"
+"--ic" = "sine"
+"--save-every" = 1
+
+[pq_compare_q5_cole_hopf]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--ic" = "sine"
+"--save-every" = 1
+"--lcu-taylor-order" = 4
+_group_postproc = ["python ./q8020-mps-burgers/docs/plot_pq_compare.py"]
+

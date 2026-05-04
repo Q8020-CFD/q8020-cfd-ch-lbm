@@ -331,3 +331,311 @@ def test_conditional_ry_statevector_action():
         assert abs(sin_k - expected_sin) < 1e-10, (
             f"k={k}: sin err {abs(sin_k - expected_sin):.2e}"
         )
+
+
+# ── DCT-II propagator (Neumann BC on phi) ────────────────────────────
+
+
+def test_dct_matrix_matches_scipy():
+    """dct_matrix(q) equals scipy.fft.dct(type=2, norm='ortho') matrix."""
+    from scipy.fft import dct as scipy_dct
+    from burgers_cole_hopf_circuit import dct_matrix
+
+    rng = np.random.RandomState(0)
+    for q in (3, 4, 5):
+        N = 1 << q
+        C = dct_matrix(q)
+        x = rng.randn(N)
+        y_ours = C @ x
+        y_scipy = scipy_dct(x, type=2, norm="ortho")
+        err = float(np.linalg.norm(y_ours - y_scipy))
+        assert err < 1e-12, f"q={q}: DCT vs scipy err {err:.2e}"
+        ortho_err = float(np.linalg.norm(C @ C.T - np.eye(N)))
+        assert ortho_err < 1e-12, (
+            f"q={q}: DCT not orthonormal: {ortho_err:.2e}"
+        )
+
+
+def test_dct_circuit_unitary():
+    """dct_circuit(q) is a (q+1)-qubit unitary block-encoding the DCT-II.
+
+    The upper-left N×N block (ancilla=|0> in/out) equals dct_matrix(q),
+    and the ancilla returns to |0> deterministically (lower-left block ≈ 0).
+    """
+    from qiskit.quantum_info import Operator
+    from burgers_cole_hopf_circuit import dct_circuit, dct_matrix
+
+    for q in (3, 4):
+        N = 1 << q
+        U = Operator(dct_circuit(q)).data
+        assert U.shape == (2 * N, 2 * N), (
+            f"q={q}: expected (q+1)-qubit unitary shape, got {U.shape}"
+        )
+        C = dct_matrix(q)
+        err = float(np.linalg.norm(U[:N, :N] - C))
+        assert err < 1e-12, f"q={q}: dct_circuit upper-left err {err:.2e}"
+        leak = float(np.linalg.norm(U[N:, :N]))
+        assert leak < 1e-12, f"q={q}: ancilla leak {leak:.2e}"
+        Uinv = Operator(dct_circuit(q, inverse=True)).data
+        err_inv = float(np.linalg.norm(Uinv[:N, :N] - C.T))
+        assert err_inv < 1e-12, (
+            f"q={q}: dct_circuit inverse err {err_inv:.2e}"
+        )
+
+
+def test_dct_diagonalises_neumann_laplacian():
+    """C @ L_neumann @ C.T is diagonal with the analytic eigenvalues."""
+    from burgers_cole_hopf import build_laplacian_dense
+    from burgers_cole_hopf_circuit import (
+        dct_matrix, neumann_laplacian_eigenvalues,
+    )
+
+    for q in (3, 4, 5):
+        N = 1 << q
+        L_box = 1.0
+        dx = L_box / N
+        L = build_laplacian_dense(N, dx, bc="neumann")
+        C = dct_matrix(q)
+        D = C @ L @ C.T
+        off = float(np.linalg.norm(D - np.diag(np.diag(D))))
+        assert off < 1e-10, f"q={q}: off-diagonal residue {off:.2e}"
+        lam_analytic = neumann_laplacian_eigenvalues(q, L_box)
+        err = float(np.linalg.norm(np.diag(D) - lam_analytic))
+        assert err < 1e-10, (
+            f"q={q}: eigenvalues vs analytic err {err:.2e}"
+        )
+
+
+def test_heat_dct_step_matches_dense_block():
+    """Single DCT step matches dense-block (Neumann) to <1e-10 at q=4."""
+    from qiskit.quantum_info import Statevector
+    from burgers_cole_hopf_circuit import _build_step_sv
+
+    q, nu, dt = 4, 1e-2, 5e-3
+    N = 1 << q
+    L_box = 1.0
+    rng = np.random.RandomState(7)
+    psi0 = rng.randn(N)
+    psi0 /= np.linalg.norm(psi0)
+
+    def _evolve(propagator: str) -> np.ndarray:
+        step = _build_step_sv(
+            q, nu, dt, L_box, bc="neumann", propagator=propagator,
+        )
+        sv = np.zeros(N * 2, dtype=complex)
+        sv[:N] = psi0
+        sv = Statevector(sv).evolve(step).data
+        psi = np.real(sv[:N])
+        nrm = float(np.linalg.norm(psi))
+        return psi / nrm if nrm > 1e-15 else psi
+
+    psi_dct = _evolve("qft-diagonal")
+    psi_db = _evolve("dense-block")
+    err = float(np.linalg.norm(psi_dct - psi_db))
+    assert err < 1e-10, (
+        f"DCT step vs dense-block at q=4: {err:.2e}"
+    )
+
+
+def test_heat_dct_full_evolution_q5():
+    """q=5 multi-step DCT evolution matches dense Neumann propagator."""
+    from burgers_cole_hopf import build_heat_propagator
+    from burgers_cole_hopf_circuit import run_cole_hopf_circuit_sv
+
+    q, nu, n_steps = 5, 1e-2, 20
+    N = 1 << q
+    L_box = 1.0
+    dx = L_box / N
+    dt = 2e-3
+
+    # Multi-modal IC (DCT must handle arbitrary spectrum)
+    xs = np.arange(N) * dx
+    psi0 = (
+        np.sin(np.pi * xs) + 0.5 * np.sin(2 * np.pi * xs)
+        + 0.3 * np.cos(0.5 * np.pi * xs) + 0.1
+    )
+    psi0 /= np.linalg.norm(psi0)
+
+    P = build_heat_propagator(N, dx, dt, nu, bc="neumann")
+    psi_ref = psi0.copy()
+    for _ in range(n_steps):
+        psi_ref = P @ psi_ref
+        psi_ref /= np.linalg.norm(psi_ref)
+
+    snaps, _ = run_cole_hopf_circuit_sv(
+        psi0, q, nu, dt, n_steps, L_box,
+        bc="neumann", propagator="qft-diagonal",
+        use_mps_prep=False,
+    )
+    err = float(np.linalg.norm(snaps[-1] - psi_ref))
+    assert err < 1e-10, f"q=5 DCT full vs dense Neumann: {err:.2e}"
+
+
+def test_qft_diagonal_dirichlet_dispatch():
+    """propagator='qft-diagonal' + bc='dirichlet' no longer raises and
+    matches dense-block end-to-end at q=4."""
+    q, nu = 4, 1e-2
+    x, dx, N = _make_grid(q, bc="dirichlet")
+    dt = 5e-3
+    n_steps = 8
+    u0 = initial_condition_sine(x)
+
+    sols_dct, _ = run_cole_hopf_circuit_simulation(
+        u0, x, nu, dt, n_steps,
+        bc="dirichlet", propagator="qft-diagonal", shots=0,
+    )
+    sols_db, _ = run_cole_hopf_circuit_simulation(
+        u0, x, nu, dt, n_steps,
+        bc="dirichlet", propagator="dense-block", shots=0,
+    )
+    err = (
+        float(np.linalg.norm(sols_dct[-1] - sols_db[-1]))
+        / max(float(np.linalg.norm(sols_db[-1])), 1e-15)
+    )
+    assert err < 1e-6, (
+        f"qft-diagonal+dirichlet vs dense-block: rel err {err:.2e}"
+    )
+    assert np.all(np.isfinite(sols_dct[-1]))
+
+
+# ── F10 acceptance assertions (new) ─────────────────────────────────
+
+
+def test_dense_block_sv_agrees_classical():
+    """F10/11.1 dense-block SV matches dense propagator at q=3.
+
+    Runs cole-hopf circuit at q=3, nu=1e-2, N_steps=10, bc=periodic,
+    propagator=dense-block in statevector mode.  Compares normalized
+    phi snapshot vs classical build_heat_propagator iteration.
+    """
+    q, nu, n_steps = 3, 1e-2, 10
+    x, dx, N = _make_grid(q)
+    dt = 0.05 / n_steps
+    L_box = float(N * dx)
+
+    u0 = initial_condition_sine(x)
+    phi0 = cole_hopf_forward(u0, dx, nu)
+    psi0 = phi0 / np.linalg.norm(phi0)
+
+    # Classical reference: dense periodic propagator
+    P = build_heat_propagator(N, dx, dt, nu)
+    psi_dense = psi0.copy()
+    for _ in range(n_steps):
+        psi_dense = P @ psi_dense
+        psi_dense /= np.linalg.norm(psi_dense)
+
+    snaps, _ = run_cole_hopf_circuit_sv(
+        psi0, q, nu, dt, n_steps, L_box,
+        propagator="dense-block",
+    )
+    psi_circ = snaps[-1]
+
+    err = float(np.linalg.norm(psi_circ - psi_dense))
+    assert err < 1e-6, (
+        f"dense-block q=3 periodic SV vs dense: {err:.2e} >= 1e-6"
+    )
+
+
+def test_dct_dirichlet_sv_agrees_classical():
+    """F10/11.2 dense-block Neumann-phi SV matches scipy expm at q=3.
+
+    Dirichlet-on-u maps to Neumann-on-phi.  Builds the classical
+    reference via scipy.linalg.expm on the Neumann Laplacian matrix
+    (diagonalised by DCT-II with analytic eigenvalues) and compares
+    to the circuit SV path with propagator=dense-block, bc=neumann.
+    """
+    from scipy.linalg import expm as scipy_expm
+    from burgers_cole_hopf import build_laplacian_dense
+
+    q, nu, n_steps = 3, 1e-2, 10
+    x, dx, N = _make_grid(q, bc="dirichlet")
+    dt = 0.05 / n_steps
+    L_box = float(N * dx)
+
+    u0 = initial_condition_sine(x)
+    phi0 = cole_hopf_forward(u0, dx, nu)
+    psi0 = phi0 / np.linalg.norm(phi0)
+
+    # Classical reference: Neumann Laplacian via scipy expm
+    L_neumann = build_laplacian_dense(N, dx, bc="neumann")
+    P_neumann = scipy_expm(nu * L_neumann * dt)
+    psi_dense = psi0.copy()
+    for _ in range(n_steps):
+        psi_dense = P_neumann @ psi_dense
+        psi_dense /= np.linalg.norm(psi_dense)
+
+    # Circuit: Dirichlet-u → Neumann-phi, dense-block propagator
+    snaps, _ = run_cole_hopf_circuit_sv(
+        psi0, q, nu, dt, n_steps, L_box,
+        bc="neumann", propagator="dense-block",
+    )
+    psi_circ = snaps[-1]
+
+    err = float(np.linalg.norm(psi_circ - psi_dense))
+    assert err < 1e-6, (
+        f"dense-block q=3 Neumann SV vs scipy expm: {err:.2e} >= 1e-6"
+    )
+
+
+def test_dense_block_unitarity():
+    """F10/11.5 dense-block SV step circuit is unitary to < 1e-10.
+
+    Extracts the full (q+1)-qubit unitary matrix from the
+    measurement-free step circuit built by _build_step_sv and asserts
+    ||U†U - I|| < 1e-10.
+    """
+    from qiskit.quantum_info import Operator
+    from burgers_cole_hopf_circuit import _build_step_sv
+
+    q, nu, dt = 3, 1e-2, 5e-3
+    L_box = 1.0
+    step = _build_step_sv(
+        q, nu, dt, L_box, bc="periodic", propagator="dense-block",
+    )
+    U = Operator(step).data
+    dim = U.shape[0]
+    residual = float(np.linalg.norm(U.conj().T @ U - np.eye(dim)))
+    assert residual < 1e-10, (
+        f"dense-block step unitarity: ||U†U - I|| = {residual:.2e} >= 1e-10"
+    )
+
+
+@pytest.mark.slow
+def test_shots_convergence():
+    """F10/11.6 smoke: shots=10000 at q=3 is non-zero and aligns with SV.
+
+    Runs cole-hopf circuit at q=3, nu=1e-2 with shots=10000 and with
+    shots=0 (SV reference).  Asserts the shots result has non-zero
+    norm and cosine similarity > 0.8 with the SV result.
+    """
+    q, nu = 3, 1e-2
+    x, dx, N = _make_grid(q)
+    dt = 0.1 * dx
+    n_steps = 5
+    u0 = initial_condition_sine(x)
+
+    sols_sv, _ = run_cole_hopf_circuit_simulation(
+        u0, x, nu, dt, n_steps,
+        propagator="qft-diagonal", shots=0,
+        snapshot_interval=n_steps,
+    )
+    u_sv = sols_sv[-1]
+
+    sols_shots, _ = run_cole_hopf_circuit_simulation(
+        u0, x, nu, dt, n_steps,
+        propagator="qft-diagonal", shots=10000,
+        snapshot_interval=n_steps,
+    )
+    u_shots = sols_shots[-1]
+
+    nrm_shots = float(np.linalg.norm(u_shots))
+    assert nrm_shots > 1e-10, "Shots result is all-zero"
+
+    nrm_sv = float(np.linalg.norm(u_sv))
+    if nrm_sv > 1e-15:
+        corr = float(
+            np.dot(u_sv / nrm_sv, u_shots / nrm_shots)
+        )
+        assert corr > 0.8, (
+            f"shots-SV cosine similarity: {corr:.3f} < 0.8"
+        )

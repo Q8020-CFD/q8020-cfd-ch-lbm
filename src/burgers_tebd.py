@@ -552,6 +552,254 @@ def wii_gates_to_dense(gates: list[np.ndarray]) -> np.ndarray:
 
 
 # -------------------------------------------------------------------
+# Phase B.1a primitives — arithmetic MPOs for ladder-form H_adv
+# -------------------------------------------------------------------
+
+
+def build_shift_mpo(
+    q: int,
+    direction: int = 1,
+) -> qtn.MatrixProductOperator:
+    """Bond-2 MPO for the cyclic shift S^± on q qubits, periodic BC.
+
+    direction=+1: S^+|k> = |(k+1) mod 2^q>  (binary increment).
+    direction=-1: S^-|k> = |(k-1) mod 2^q>  (binary decrement).
+
+    MSB-first qubit ordering: site 0 = MSB, site q-1 = LSB. The carry
+    (or borrow, for decrement) propagates from LSB toward MSB on a
+    2-dim virtual bond. Periodic BC closes the leading carry by summing
+    over both values at the MSB boundary; this is what makes the shift
+    cyclic mod 2^q.
+    """
+    if direction not in (1, -1):
+        raise ValueError("direction must be +1 or -1")
+    if q < 1:
+        raise ValueError("q must be >= 1")
+
+    # Per-site bond-2 tensor for S+ in index order (left, s_out, s_in, right).
+    # Right bond = carry-in (from LSB neighbour); left bond = carry-out
+    # (toward MSB neighbour).  c_in=0: identity; c_in=1: flip s and emit
+    # c_out = old s.
+    W = np.zeros((2, 2, 2, 2), dtype=complex)
+    W[0, 0, 0, 0] = 1.0
+    W[0, 1, 1, 0] = 1.0
+    W[0, 1, 0, 1] = 1.0
+    W[1, 0, 1, 1] = 1.0
+
+    # Decrement = transpose of increment: swap (s_out, s_in).
+    if direction == -1:
+        W = np.transpose(W, (0, 2, 1, 3))
+
+    # Periodic-BC boundary closures.
+    v_left = np.array([1.0, 1.0], dtype=complex)
+    v_right = np.array([0.0, 1.0], dtype=complex)
+
+    if q == 1:
+        T = np.einsum("l,lijr,r->ij", v_left, W, v_right)
+        return qtn.MatrixProductOperator([T], shape="ud")
+
+    arrays: list[np.ndarray] = []
+    for site in range(q):
+        if site == 0:
+            T = np.einsum("l,lijr->ijr", v_left, W)
+            T = np.transpose(T, (2, 0, 1))
+        elif site == q - 1:
+            T = np.einsum("lijr,r->lij", W, v_right)
+        else:
+            T = np.transpose(W, (0, 3, 1, 2))
+        arrays.append(T)
+
+    return qtn.MatrixProductOperator(arrays, shape="lrud")
+
+
+def _mps_to_diag_mpo(
+    u: np.ndarray,
+    q: int,
+    cutoff: float = 1e-14,
+) -> qtn.MatrixProductOperator:
+    """Lift an MPS for the vector ``u`` into the diagonal MPO ``diag(u)``.
+
+    Per-site rule: T[l, r, s_out, s_in] = M[l, s_out, r] * δ(s_out, s_in)
+    where ``M`` is the corresponding MPS site tensor in (l, p, r) order.
+    The output MPO has the same bond dimensions as the input MPS.
+    """
+    mps = qtn.MatrixProductState.from_dense(
+        u.astype(complex), dims=[2] * q, cutoff=cutoff,
+    )
+    if q == 1:
+        vec = np.asarray(mps.tensors[0].data, dtype=complex).reshape(2)
+        T = np.diag(vec)
+        return qtn.MatrixProductOperator([T], shape="ud")
+
+    arrays: list[np.ndarray] = []
+    for site in range(q):
+        t = mps.tensors[site]
+        inds = t.inds
+        ax_k = inds.index(f"k{site}")
+        bond_axes = [a for a in range(len(inds)) if a != ax_k]
+        if site == 0:
+            right_ax = bond_axes[0]
+            M = np.transpose(t.data, (ax_k, right_ax))  # (p, r)
+            d_r = M.shape[1]
+            T = np.zeros((d_r, 2, 2), dtype=complex)
+            for s in range(2):
+                T[:, s, s] = M[s, :]
+        elif site == q - 1:
+            left_ax = bond_axes[0]
+            M = np.transpose(t.data, (left_ax, ax_k))  # (l, p)
+            d_l = M.shape[0]
+            T = np.zeros((d_l, 2, 2), dtype=complex)
+            for s in range(2):
+                T[:, s, s] = M[:, s]
+        else:
+            left_ax, right_ax = bond_axes
+            M = np.transpose(t.data, (left_ax, ax_k, right_ax))  # (l, p, r)
+            d_l, _, d_r = M.shape
+            T = np.zeros((d_l, d_r, 2, 2), dtype=complex)
+            for s in range(2):
+                T[:, :, s, s] = M[:, s, :]
+        arrays.append(T)
+
+    return qtn.MatrixProductOperator(arrays, shape="lrud")
+
+
+def build_hamiltonian_mpo_ladder(
+    u: np.ndarray,
+    dx: float,
+    bc: str = "periodic",
+) -> qtn.MatrixProductOperator:
+    """Ladder-form MPO for ``H_adv = -(i/2)·{diag(u), D_x}``.
+
+    Symmetrized advection generator, Hermitian by construction. ``D_x``
+    is the central first-difference ``(S+ − S−)/(2·dx)`` built from the
+    bond-2 increment/decrement MPOs of :func:`build_shift_mpo`. The
+    resulting H_adv MPO has bond dimension ≤ 4·χ_u where χ_u is the MPS
+    bond dimension of ``u``.
+
+    Periodic boundary conditions only; Dirichlet is out of scope per
+    docs/F2-PHASE-B1a-SPEC.md §7.
+    """
+    if bc != "periodic":
+        raise NotImplementedError(
+            f"bc={bc!r} not supported; only 'periodic'"
+        )
+    N = len(u)
+    q = int(np.log2(N))
+    if 2**q != N:
+        raise ValueError(f"len(u)={N} must be a power of 2")
+
+    sp = build_shift_mpo(q, direction=+1)
+    sm = build_shift_mpo(q, direction=-1)
+    D_x = sp.add_MPO(sm * (-1.0))
+    D_x = D_x * (1.0 / (2.0 * dx))
+    D_x.compress(cutoff=1e-12)
+
+    diag_u = _mps_to_diag_mpo(u, q)
+
+    left_term = diag_u.apply(D_x)
+    right_term = D_x.apply(diag_u)
+
+    H = left_term.add_MPO(right_term)
+    H = H * (-1j / 2.0)
+    H.compress(cutoff=1e-12)
+    return H
+
+
+def _ladder_mpo_to_dense(H_mpo: qtn.MatrixProductOperator) -> np.ndarray:
+    """Contract a quimb MPO into its dense (N, N) matrix.
+
+    Iterates over sites, normalises each tensor's axes to
+    ``(d_left, p_out, p_in, d_right)`` (boundary sites get a trivial
+    bond of size 1), then chains them with ``np.tensordot`` over the
+    bond index. Bond identification uses shared quimb index names with
+    the previous and next site tensors. The final array is permuted to
+    ``(p_out_0, ..., p_out_{q-1}, p_in_0, ..., p_in_{q-1})`` and
+    reshaped to ``(2^q, 2^q)``.
+    """
+    q = H_mpo.L
+    site_tensors: list[np.ndarray] = []
+    for site in range(q):
+        t = H_mpo.tensors[site]
+        inds = list(t.inds)
+        k_ax = inds.index(f"k{site}")
+        b_ax = inds.index(f"b{site}")
+        bond_axes = [a for a in range(len(inds)) if a not in (k_ax, b_ax)]
+        bond_inds = [inds[a] for a in bond_axes]
+        left_inds = (
+            set(H_mpo.tensors[site - 1].inds) if site > 0 else set()
+        )
+        right_inds = (
+            set(H_mpo.tensors[site + 1].inds) if site < q - 1 else set()
+        )
+        l_ax: int | None = None
+        r_ax: int | None = None
+        for b_name, b_axis in zip(bond_inds, bond_axes):
+            if b_name in left_inds:
+                l_ax = b_axis
+            elif b_name in right_inds:
+                r_ax = b_axis
+
+        if q == 1:
+            data = np.transpose(t.data, (k_ax, b_ax)).reshape(1, 2, 2, 1)
+        elif site == 0:
+            data = np.transpose(t.data, (k_ax, b_ax, r_ax))
+            data = data.reshape(1, 2, 2, -1)
+        elif site == q - 1:
+            data = np.transpose(t.data, (l_ax, k_ax, b_ax))
+            data = data.reshape(-1, 2, 2, 1)
+        else:
+            data = np.transpose(t.data, (l_ax, k_ax, b_ax, r_ax))
+        site_tensors.append(np.asarray(data, dtype=complex))
+
+    acc = site_tensors[0]
+    for s in range(1, q):
+        acc = np.tensordot(
+            acc, site_tensors[s], axes=([acc.ndim - 1], [0]),
+        )
+
+    # Strip trivial boundary bonds (first and last axes).
+    acc = acc[0][..., 0]
+    # Interleaved (p_out_0, p_in_0, p_out_1, p_in_1, ...) ->
+    # grouped (p_out_0..p_out_{q-1}, p_in_0..p_in_{q-1}).
+    perm = list(range(0, 2 * q, 2)) + list(range(1, 2 * q, 2))
+    acc = np.transpose(acc, perm)
+    N = 2**q
+    return acc.reshape(N, N)
+
+
+def build_wii_layer_ladder(
+    H_mpo: qtn.MatrixProductOperator,
+    dt: float,
+) -> list[np.ndarray]:
+    """W-II layer of unitary gates from a ladder-form Hamiltonian MPO.
+
+    Phase B.1a entry point. The ladder MPO produced by
+    :func:`build_hamiltonian_mpo_ladder` encodes a *spatially local*
+    Hamiltonian with bond dim ≤ 4·χ_u, so its dense matrix at q ≲ 6 is
+    a manageable 8×8 to 64×64 block. We contract the MPO tensor list
+    manually (see :func:`_ladder_mpo_to_dense`) and reuse the existing
+    exact-SVD + polar W-II procedure of :func:`build_wii_layer`.
+
+    Locality is the reason this works where the rank-2 state-dependent
+    H from :func:`build_hamiltonian_dense` did not: for a local H, the
+    SVD factors of exp(-i H dt) at small dt are dominated by an
+    identity-like component, so the polar correction is small and the
+    reconstruction approximates exp(-i H dt) to O(dt^3) instead of
+    saturating at the O(1) floor that the rank-2 form produced.
+
+    Returns a list of q (2D, 2D) unitary gates with the same convention
+    as :func:`build_wii_layer`. Reconstruct via :func:`wii_gates_to_dense`.
+    """
+    if not isinstance(H_mpo, qtn.MatrixProductOperator):
+        raise TypeError(
+            "H_mpo must be a quimb MatrixProductOperator; "
+            f"got {type(H_mpo)!r}"
+        )
+    H_dense = H_mpo.to_dense()
+    return build_wii_layer(H_dense, dt)
+
+
+# -------------------------------------------------------------------
 # Smoke test and validation
 # -------------------------------------------------------------------
 

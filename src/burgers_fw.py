@@ -58,12 +58,14 @@ class BurgersConfig(SolverConfig):
     t1: float | None = None
     t2: float | None = None
     sign_recovery: str = "none"
+    splitting: str = "lie"
     propagator: str = "qft-diagonal"
     encoding: str = "binary"
     evolution_mode: str = "single"
     chunk_size: int = 10
     phi_modes: int = 0
     taylor_order: int = 4
+    readout: str = "direct"
     shock_pct: float | None = None
 
     def describe(self) -> dict[str, Any]:
@@ -214,6 +216,8 @@ class TEBDCircuitIntegrator(TimeIntegrator):
             threshold=config.mps_threshold,
             shots=config.shots, backend=self.backend,
             sign_recovery=config.sign_recovery, bc=grid.bc,
+            splitting=config.splitting,
+            readout=getattr(config, "readout", "direct"),
         )
         return DenseState(u_new), metrics
 
@@ -328,6 +332,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
             chunk_size=config.chunk_size,
             phi_modes=config.phi_modes,
             taylor_order=config.taylor_order,
+            readout=getattr(config, "readout", "direct"),
         )
 
 

@@ -80,6 +80,38 @@ def compute_rhs_shift(
     return rhs
 
 
+def diffusion_rhs(
+    u: np.ndarray,
+    dx: float,
+    nu: float,
+    bc: str = "periodic",
+) -> np.ndarray:
+    """Pure Laplacian RHS: ν·∂²u/∂x² (no advection, no source).
+
+    Dissipative sub-step generator for the operator-split TEBD circuit
+    (F2 Phase B.1a). Uses the same second-order central-difference
+    Laplacian as ``compute_rhs_shift`` so that for any (u, dx, nu, bc):
+
+        compute_rhs_shift(u, dx, nu, g=None, bc=bc)
+            == diffusion_rhs(u, dx, nu, bc) - u·grad_u
+
+    bc='periodic': wrap-around stencil.
+    bc='dirichlet': zero ghost nodes; rhs at boundary indices forced to 0.
+    """
+    N = len(u)
+    sp = shift_matrix(N, +1, bc=bc)
+    sm = shift_matrix(N, -1, bc=bc)
+
+    lap_u = (sp + sm - 2 * np.eye(N)) @ u / dx**2
+    rhs = nu * lap_u
+
+    if bc == "dirichlet":
+        rhs[0] = 0.0
+        rhs[-1] = 0.0
+
+    return rhs
+
+
 # ---------------------------------------------------------------------------
 # Pauli decomposition (Appendix A, Eq. 16)
 # ---------------------------------------------------------------------------
@@ -242,6 +274,36 @@ def evolution_circuit(
     qc.append(evo_gate, range(q))
 
     return qc
+
+
+def quantum_evolution_step(
+    u: np.ndarray,
+    dx: float,
+    dt: float,
+    nu: float,
+    g: np.ndarray | None = None,
+    use_exact: bool = True,
+) -> np.ndarray:
+    """One-step quantum evolution of velocity field u.
+
+    Normalizes u, builds the Pauli Hamiltonian via build_evolution_hamiltonian,
+    and applies e^{-iδτÂ} either exactly (matrix exponentiation) or via
+    statevector simulation of the Trotter circuit.
+
+    Returns the real part of the normalized evolved state (length N).
+    """
+    from qiskit.quantum_info import Statevector
+
+    u_norm = u / np.linalg.norm(u)
+    hamiltonian = build_evolution_hamiltonian(u, dx, dt, nu, g)
+
+    if use_exact:
+        U_mat = exact_evolution_matrix(hamiltonian, dt)
+        return (U_mat @ u_norm).real
+    else:
+        qc_evo = evolution_circuit(hamiltonian, dt)
+        sv = Statevector(u_norm).evolve(qc_evo)
+        return sv.data.real
 
 
 def exact_evolution_matrix(

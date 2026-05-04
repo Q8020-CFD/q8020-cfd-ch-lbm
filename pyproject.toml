@@ -21,8 +21,8 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-q8020_cfd_metautil = { path = "../q8020/q8020-cfd-metautil", editable = true }
-q8020_cfd_qutil = { path = "../q8020/q8020-cfd-qutil", editable = true }
+q8020_cfd_metautil = { path = "../q8020-cfd-metautil", editable = true }
+q8020_cfd_qutil = { path = "../q8020-cfd-qutil", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

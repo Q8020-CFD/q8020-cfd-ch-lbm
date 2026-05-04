@@ -1,0 +1,85 @@
+{
+  "final_error_epsilon": 4.7429045002535215,
+  "max_error_epsilon": 4.7429045002535215,
+  "classical_wall_time_s": 7.390975952148438e-05,
+  "method_wall_time_s": 0.6339089870452881,
+  "speedup_ratio": 0.00011659364519500663,
+  "n_pauli_terms": 12,
+  "shots": 1024,
+  "t1": null,
+  "t2": null,
+  "backend_name": null,
+  "backend_type": "sim",
+  "coupling_map": "default",
+  "optimization_level": 1,
+  "seed": null,
+  "total_pauli_decomp_time": 0,
+  "total_circuit_construction_time": 0,
+  "total_transpilation_time": 0,
+  "total_execution_time": 0,
+  "avg_circuit_depth": null,
+  "avg_gate_count": null,
+  "avg_cx_gates": 0.0,
+  "n_qubits": null,
+  "sign_recovery": "none",
+  "per_step_metrics": [
+    {
+      "shots": 1024,
+      "n_kept": 997,
+      "p_success": 0.9736328125,
+      "n_steps": 1,
+      "step": 1,
+      "transpile": {
+        "wall_time": 0.0,
+        "optimization_level": 1,
+        "skipped": "AerSimulator+LCU"
+      },
+      "execute": {
+        "wall_time": 0.0017070770263671875,
+        "shots_requested": 1024,
+        "shots_executed": 1024,
+        "backend_time": 0.000661875
+      },
+      "lcu_lambda": 0.9999999999999999
+    },
+    {
+      "shots": 1024,
+      "n_kept": 979,
+      "p_success": 0.9560546875,
+      "n_steps": 2,
+      "step": 2,
+      "transpile": {
+        "wall_time": 0.0,
+        "optimization_level": 1,
+        "skipped": "AerSimulator+LCU"
+      },
+      "execute": {
+        "wall_time": 0.05404329299926758,
+        "shots_requested": 1024,
+        "shots_executed": 1024,
+        "backend_time": 0.053432541
+      },
+      "lcu_lambda": 0.9999999999999999
+    },
+    {
+      "shots": 1024,
+      "n_kept": 955,
+      "p_success": 0.9326171875,
+      "n_steps": 3,
+      "step": 3,
+      "transpile": {
+        "wall_time": 0.0,
+        "optimization_level": 1,
+        "skipped": "AerSimulator+LCU"
+      },
+      "execute": {
+        "wall_time": 0.06828594207763672,
+        "shots_requested": 1024,
+        "shots_executed": 1024,
+        "backend_time": 0.067408
+      },
+      "lcu_lambda": 0.9999999999999999
+    }
+  ],
+  "_source": "solver"
+}

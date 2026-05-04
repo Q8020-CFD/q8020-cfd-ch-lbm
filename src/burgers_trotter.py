@@ -32,6 +32,7 @@ from burgers_mps import (
 from burgers_nonlinear import (
     build_evolution_hamiltonian,
     compute_rhs_shift,
+    diffusion_rhs,
     evolution_circuit,
     exact_evolution_matrix,
 )
@@ -44,7 +45,9 @@ from burgers_sign_recovery import (
 )
 from burgers_tebd import (
     build_hamiltonian_dense,
+    build_hamiltonian_mpo_ladder,
     build_wii_layer,
+    build_wii_layer_ladder,
     run_tebd_simulation,
 )
 
@@ -52,6 +55,20 @@ from burgers_tebd import (
 # ---------------------------------------------------------------------------
 # Single-step methods
 # ---------------------------------------------------------------------------
+
+
+def _project_dirichlet(u_norm: np.ndarray) -> np.ndarray:
+    """Zero boundary amplitudes and renormalize (Dirichlet BC enforcement).
+
+    The Pauli lstsq fit targets delta0[0]=delta0[-1]=0, but the unitary
+    e^{-iHdt} mixes all amplitudes, causing O(dt) boundary leakage each step.
+    Project back onto the Dirichlet subspace to prevent accumulation.
+    """
+    v = u_norm.copy()
+    v[0] = 0.0
+    v[-1] = 0.0
+    mag = np.linalg.norm(v)
+    return v / mag if mag > 1e-15 else v
 
 
 def shift_euler_step(
@@ -109,6 +126,8 @@ def quantum_exact_step(
     )
     U = exact_evolution_matrix(hamiltonian, dt)
     u_evolved_norm = (U @ u_norm).real
+    if bc == "dirichlet":
+        u_evolved_norm = _project_dirichlet(u_evolved_norm)
     return u_evolved_norm * norm_next, {"n_pauli_terms": len(hamiltonian)}
 
 
@@ -279,6 +298,9 @@ def quantum_circuit_step(
         )
     execute_time = time.perf_counter() - t0 - transpile_time
 
+    if bc == "dirichlet":
+        u_evolved_norm = _project_dirichlet(u_evolved_norm)
+
     metrics = {
         "pauli_decomp_time_s": pauli_decomp_time,
         "circuit_construction_time_s": circuit_build_time,
@@ -385,6 +407,8 @@ def mps_step(
     hamiltonian = build_evolution_hamiltonian(u, dx, dt, nu, g, bc=bc)
     U = exact_evolution_matrix(hamiltonian, dt)
     u_evolved_norm = (U @ u_prepared).real
+    if bc == "dirichlet":
+        u_evolved_norm = _project_dirichlet(u_evolved_norm)
 
     rhs = compute_rhs_shift(u, dx, nu, g, bc=bc)
     norm_next = np.linalg.norm(u + dt * rhs)
@@ -548,8 +572,23 @@ def tebd_circuit_step(
     backend: Any = None,
     sign_recovery: str = "none",
     bc: str = "periodic",
+    splitting: str = "lie",
+    readout: str = "direct",
 ) -> tuple[np.ndarray, dict]:
-    """One TEBD circuit step: MPS state prep -> W-II layer -> measure."""
+    """One TEBD circuit step: MPS state prep -> W-II layer -> measure.
+
+    Lie–Trotter splitting: ladder-form MPO advection on the quantum
+    circuit, then a classical diffusion sub-step via ``diffusion_rhs``.
+
+    ``g`` is accepted for API compatibility but ignored: the ladder MPO
+    encodes only the symmetrized advection generator and has no forcing
+    term. Pass forcing through a separate classical sub-step if needed.
+
+    readout: 'direct' post-selects bond ancillas and estimates amplitudes
+    from sqrt(counts).  'hadamard_per_bin' wraps the full circuit in a
+    Hadamard test per basis bin to recover signed Re(psi_k) — use with
+    shots > 0 to avoid sign loss (F2-10).
+    """
     from qiskit import QuantumCircuit as QC
     from qiskit.quantum_info import Statevector
 
@@ -560,13 +599,27 @@ def tebd_circuit_step(
             "in F2-IMPLEMENTATION-SPEC.md §9."
         )
 
+    if readout not in ("direct", "hadamard_per_bin"):
+        raise ValueError(
+            f"tebd_circuit_step: unknown readout={readout!r}; "
+            "expected 'direct' or 'hadamard_per_bin'"
+        )
+
     dx = float(x[1] - x[0])
 
-    # 1. Dense Hermitian generator for this step (same API as Phase A).
-    H = build_hamiltonian_dense(u, dx, dt, nu, g, bc=bc)
+    # Strang splitting: apply half diffusion step to u before advection circuit,
+    # then apply another half after.  Lie-Trotter uses u directly and applies
+    # the full diffusion step after.
+    if splitting == "strang":
+        u_in = u + (dt / 2.0) * diffusion_rhs(u, dx, nu, bc)
+    else:
+        u_in = u
+
+    # 1. Ladder-form advection MPO built from the circuit input state.
+    H_mpo = build_hamiltonian_mpo_ladder(u_in, dx, bc=bc)
 
     # 2. Amplitude encoding: normalize and save norm for decode.
-    u_norm_vec, norm_u = normalize_state(u)
+    u_norm_vec, norm_u = normalize_state(u_in)
 
     # 3. MPS state-prep circuit (right-canonical — required by Ran 2020
     #    unitary completion used in burgers_mps.mps_to_circuit).
@@ -581,7 +634,7 @@ def tebd_circuit_step(
 
     # 4. Build W-II gate layer and determine ancilla width required.
     #    Gate dim may not be a power of 2; pad-plan to next power of 2.
-    gates = build_wii_layer(H, dt)
+    gates = build_wii_layer_ladder(H_mpo, dt)
     if not gates:
         raise RuntimeError("build_wii_layer returned no gates")
     gate_dim = gates[0].shape[0]
@@ -599,6 +652,7 @@ def tebd_circuit_step(
     _tile_wii_gates(qc, gates, n_phys)
 
     # 5. Execute.
+    readout_meta: dict[str, Any] = {}
     if not shots:
         sv = Statevector.from_instruction(qc)
         # extract_physical_state takes (sv, n_phys, n_bond).
@@ -606,29 +660,60 @@ def tebd_circuit_step(
             sv, n_phys, n_total - n_phys,
         ).real
     else:
-        from qiskit.compiler import transpile
         if backend is None:
             from qiskit_aer import AerSimulator
             backend = AerSimulator()
-        qc_m = qc.copy()
-        qc_m.measure_all()
-        qc_t = transpile(qc_m, backend, optimization_level=1)
-        result = backend.run(qc_t, shots=shots).result()
-        counts = result.get_counts()
-        # Post-select: bond qubits == 0 (high bits of Qiskit bitstring).
-        N = 2**n_phys
-        amps = np.zeros(N)
-        total = 0
-        for bitstr, cnt in counts.items():
-            idx = int(bitstr.replace(" ", ""), 2)
-            if idx < N:
-                amps[idx] = cnt
-                total += cnt
-        if total > 0:
-            amps = np.sqrt(amps / total)
-        u_evolved_norm = amps
 
-    u_next = u_evolved_norm * norm_u
+        if readout == "hadamard_per_bin":
+            from qiskit.compiler import transpile as _transpile
+            from burgers_cole_hopf_circuit import (
+                hadamard_per_bin_circuit,
+                extract_hadamard_per_bin_amplitudes,
+            )
+            N_bins = 2**n_phys
+            n_anc_evo = n_total - n_phys
+            trivial_prep = QC(n_phys)
+            per_k_counts: list[dict[str, int]] = []
+            for k in range(N_bins):
+                qc_k = hadamard_per_bin_circuit(
+                    n_phys, trivial_prep, 0, qc, n_anc_evo, k,
+                )
+                qc_t = _transpile(qc_k, backend, optimization_level=1)
+                result = backend.run(qc_t, shots=shots).result()
+                per_k_counts.append(result.get_counts())
+            u_evolved_norm, agg = extract_hadamard_per_bin_amplitudes(
+                per_k_counts, n_phys, 0, n_anc_evo, shots, phi_norm=1.0,
+            )
+            readout_meta = {"readout": "hadamard_per_bin", **agg}
+        else:
+            from qiskit.compiler import transpile
+            qc_m = qc.copy()
+            qc_m.measure_all()
+            qc_t = transpile(qc_m, backend, optimization_level=1)
+            result = backend.run(qc_t, shots=shots).result()
+            counts = result.get_counts()
+            # Post-select: bond qubits == 0 (high bits of Qiskit bitstring).
+            N = 2**n_phys
+            amps = np.zeros(N)
+            total = 0
+            for bitstr, cnt in counts.items():
+                idx = int(bitstr.replace(" ", ""), 2)
+                if idx < N:
+                    amps[idx] = cnt
+                    total += cnt
+            if total > 0:
+                amps = np.sqrt(amps / total)
+            u_evolved_norm = amps
+            readout_meta = {"readout": "direct"}
+
+    u_adv = u_evolved_norm * norm_u
+
+    if splitting == "strang":
+        u_next = u_adv + (dt / 2.0) * diffusion_rhs(u_adv, dx, nu, bc)
+        splitting_label = "strang"
+    else:
+        u_next = u_adv + dt * diffusion_rhs(u_adv, dx, nu, bc)
+        splitting_label = "lie"
 
     metrics = {
         "method": "tebd_circuit",
@@ -640,6 +725,8 @@ def tebd_circuit_step(
         "n_gates": int(sum(qc.count_ops().values())),
         "wii_gate_dim": gate_dim,
         "sign_recovery": sign_recovery,
+        "splitting": splitting_label,
+        **readout_meta,
     }
 
     return u_next, metrics
@@ -678,6 +765,7 @@ def run_simulation(
     evolution_mode: str = "single",
     chunk_size: int = 10,
     phi_modes: int = 0,
+    readout: str = "direct",
 ) -> tuple[list[np.ndarray], list[dict] | None]:
     """Run multi-step Burgers simulation.
 
@@ -741,6 +829,7 @@ def run_simulation(
             evolution_mode=evolution_mode,
             chunk_size=chunk_size,
             phi_modes=phi_modes,
+            readout=readout,
         )
         return sols, mets
 

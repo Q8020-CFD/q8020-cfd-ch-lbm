@@ -77,8 +77,10 @@ trotter_steps, propagator_variant)`:
 Two propagator variants must both exist and be selectable at the CLI:
 
 - `--propagator qft-diagonal` (default, recommended). One QFT + one diagonal
-  phase-damping layer + one QFT⁻¹ per Trotter step. O(q²) two-qubit gates per
-  step. Non-unitary via one ancilla per step (shared + reset; see §5).
+  phase-damping layer + one QFT⁻¹ per Trotter step. O(2^q) controlled-Ry gates
+  per step from the exact-Möbius diagonal-rotation block (see §5.1); QFT itself
+  contributes O(q²) two-qubit gates. Non-unitary via one ancilla per step
+  (shared + reset; see §5).
 - `--propagator dense-block`. Exact eigendecomposition of exp(ν·L·dt),
   block-encoded via V^H + conditional Ry + V with ancilla post-selection.
   No Trotter error (exact per step). Handles any BC including Dirichlet
@@ -275,13 +277,6 @@ Same case as 11.2: `‖φ_circuit − φ_dense‖₂ / ‖φ_dense‖₂ < 1e-6`
 eigendecomposition, no Trotter error). Artifact: pytest PASS in
 `test_cole_hopf_circuit.py::test_11_3_dense_block_statevector`.
 
-### 11.4 Trotter-error convergence
-
-Not applicable for current propagators: `qft-diagonal` uses exact Möbius
-rotation angles and `dense-block` uses exact eigendecomposition. Both have
-zero Trotter error per step. A future Pauli-Trotter variant (§13) would
-restore this acceptance item.
-
 ### 11.5 Shots correctness
 
 At `shots=150k` and the 11.2 configuration:
@@ -393,6 +388,15 @@ Then P6 + P8 in parallel. P9 last.
   error-mitigation story.
 - **QSVT-polynomial alternative** to the ancilla-Ry construction. Tighter
   asymptotics; unnecessary at q ≤ 6.
+- **True Pauli-Trotter propagator.** Decompose `L` via
+  `SparsePauliOp.from_operator` → `group_commuting(qubit_wise=False)`,
+  exponentiate each commuting group with an LCU-of-2 (Hadamard ancilla,
+  controlled `PauliEvolutionGate(±ν·dt)`, Hadamard, post-select). First-
+  order Trotter error `O(Δt²)` per step → restores a Trotter-convergence
+  acceptance item (slope ≈ −1 in `‖φ_circuit − φ_dense‖₂` vs `N_steps`
+  log-log). Originally proposed as `--propagator pauli-trotter`; the
+  initial implementation collapsed to dense eigendecomposition and was
+  renamed to `dense-block`. A faithful re-implementation belongs here.
 - **F11 Burgulence.** Multi-mode stochastic IC ensemble. Depends on F10
   landing with stable small-ν behavior.
 

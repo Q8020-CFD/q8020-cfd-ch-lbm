@@ -140,6 +140,11 @@ if __name__ == "__main__":
         "--trotter-reps", type=int, default=1,
         help="Trotter repetitions (quantum_circuit only)",
     )
+    parser.add_argument(
+        "--splitting", type=str, default="lie",
+        choices=["lie", "strang"],
+        help="Operator splitting for tebd_circuit: lie (Lie-Trotter) or strang (Strang/symmetric)",
+    )
 
     # MPS parameters
     parser.add_argument(
@@ -171,6 +176,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lcu-taylor-order", type=int, default=4,
         help="Taylor truncation order for LCU propagator",
+    )
+    parser.add_argument(
+        "--readout", type=str, default="direct",
+        choices=["direct", "hadamard_per_bin"],
+        help="Shots readout strategy (cole_hopf_circuit and tebd_circuit shots): "
+             "'direct' = post-selected amplitude estimation; "
+             "'hadamard_per_bin' = signed Re(psi_k) via per-bin "
+             "Hadamard test (F2-10, F10-12).",
     )
 
     # Reporting
@@ -268,12 +281,14 @@ if __name__ == "__main__":
         seed=args.seed,
         t1=args.t1, t2=args.t2,
         sign_recovery=args.sign_recovery,
+        splitting=args.splitting,
         propagator=args.propagator,
         encoding=args.encoding,
         evolution_mode=args.evolution_mode,
         chunk_size=args.chunk_size,
         phi_modes=args.phi_modes,
         taylor_order=args.lcu_taylor_order,
+        readout=args.readout,
         save_every=args.save_every,
         shock_pct=shock_pct,
     )

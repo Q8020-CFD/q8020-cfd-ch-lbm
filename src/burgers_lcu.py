@@ -415,6 +415,126 @@ def heat_lcu_with_potential_step_circuit(
     return qc, lam_total
 
 
+def _dct_matrix_q(q: int) -> np.ndarray:
+    """Orthonormal DCT-II matrix on N=2^q points.
+
+    C[k,n] = alpha_k * cos(pi*k*(2n+1)/(2N)); C @ C.T = I.
+    Private copy to avoid circular import with burgers_cole_hopf_circuit.
+    """
+    N = 1 << q
+    n = np.arange(N)
+    k = np.arange(N).reshape(-1, 1)
+    C = np.cos(np.pi * k * (2 * n + 1) / (2 * N))
+    C[0, :] *= 1.0 / np.sqrt(N)
+    C[1:, :] *= np.sqrt(2.0 / N)
+    return C
+
+
+def heat_lcu_neumann_step_circuit(
+    q: int,
+    nu: float,
+    dt: float,
+    L_box: float,
+    taylor_order: int = 8,
+) -> tuple[QuantumCircuit, float]:
+    """LCU block-encoding of the heat propagator for Neumann BC.
+
+    Implements the Fourier-Bessel LCU decomposition of the diagonal
+    heat propagator in the DCT-II eigenbasis.
+
+    Neumann Laplacian eigenvalues: lam_k = -(4/dx^2)*sin^2(pi*k/(2N))
+    Heat kernel: d_k = exp(nu*lam_k*dt) = exp(-A/2) * exp((A/2)*cos(pi*k/N))
+    where A = 4*nu*dt/dx^2.
+
+    Fourier-Bessel expansion (Jacobi-Anger identity):
+      exp(x*cos(phi)) = I_0(x) + 2*sum_{j=1}^M I_j(x)*cos(j*phi)
+    where I_j is the modified Bessel function of the first kind.
+
+    Each term cos(j*pi*k/N) = Re[exp(i*j*pi*k/N)] is split into two
+    diagonal unitaries V_j^+ and V_j^-:
+      V_j^+[k,k] = exp(+i*j*pi*k/N)  -- product of q P-gates (LSB=qubit 0)
+      V_j^-[k,k] = exp(-i*j*pi*k/N)  -- product of q P-gates
+
+    Circuit layout: [DCT | PREPARE+SELECT+PREPARE_dag | DCT_dag]
+    on q data qubits + m ancilla qubits.
+
+    Gate count: O(M*q) for SELECT + O(q^2) for DCT = O(M*q) total
+    where M = taylor_order.  All coefficients are positive (no sign
+    absorption needed), so the LCU is a pure probability mixture.
+
+    Returns (circuit, lambda) where post-selecting ancilla=|0>^m gives
+    P_heat / lambda on the data register.
+    """
+    from scipy.special import iv as bessel_iv
+    from qiskit.circuit.library import UnitaryGate
+
+    N = 1 << q
+    dx = L_box / N
+    # A = 4*nu*dt/dx^2; x = A/2 is the Bessel argument
+    A = 4.0 * nu * dt / (dx ** 2)
+    x_bess = A / 2.0
+    s = math.exp(-A / 2.0)
+
+    M = taylor_order
+
+    # Build LCU operators and coefficients.
+    # Term 0: s*I_0(x)*I  (identity)
+    # Term 2j-1: s*I_j(x)*V_j^+    for j=1..M
+    # Term 2j:   s*I_j(x)*V_j^-    for j=1..M
+    ops: list[QuantumCircuit] = []
+    coeffs: list[float] = []
+
+    i0 = float(bessel_iv(0, x_bess))
+    qc_id = QuantumCircuit(q, name="I")
+    if q > 0:
+        qc_id.id(0)
+    ops.append(qc_id)
+    coeffs.append(s * i0)
+
+    for j in range(1, M + 1):
+        ij = float(bessel_iv(j, x_bess))
+        c_j = s * ij
+        if abs(c_j) < 1e-30:
+            break  # Bessel series has converged; remaining terms negligible
+
+        # V_j^+: P(j*pi*2^l/N) on qubit l  -->  phase exp(+i*j*pi*k/N) on |k>
+        qc_p = QuantumCircuit(q, name=f"Vp{j}")
+        for l in range(q):
+            angle = j * math.pi * (1 << l) / N
+            qc_p.p(angle, l)
+        ops.append(qc_p)
+        coeffs.append(c_j)
+
+        # V_j^-: P(-j*pi*2^l/N) on qubit l -->  phase exp(-i*j*pi*k/N) on |k>
+        qc_m = QuantumCircuit(q, name=f"Vm{j}")
+        for l in range(q):
+            angle = -j * math.pi * (1 << l) / N
+            qc_m.p(angle, l)
+        ops.append(qc_m)
+        coeffs.append(c_j)
+
+    coeffs_arr = np.array(coeffs)
+    # All Bessel coefficients I_j(x) > 0 for x > 0, so all LCU weights are
+    # positive -- no sign absorption needed in SELECT.
+    lcu_qc, lam = lcu_block_encoding(ops, coeffs_arr, q)
+    m_anc = lcu_qc.num_qubits - q
+
+    # Sandwich the LCU with DCT / DCT^T to implement the full propagator
+    # P_heat = C^T * D * C  (where C is the DCT-II matrix and D = diag(d_k)).
+    C = _dct_matrix_q(q)
+    C_gate = UnitaryGate(C, label="DCT")
+    C_dag_gate = UnitaryGate(C.T, label="DCT_dag")
+
+    n_total = q + m_anc
+    data = list(range(q))
+    qc = QuantumCircuit(n_total, name="heat_lcu_neumann")
+    qc.append(C_gate, data)
+    qc.compose(lcu_qc, inplace=True)
+    qc.append(C_dag_gate, data)
+
+    return qc, lam
+
+
 def heat_lcu_step_circuit(
     q: int,
     nu: float,
@@ -425,17 +545,27 @@ def heat_lcu_step_circuit(
 ) -> tuple[QuantumCircuit, float]:
     """LCU block-encoding of the heat propagator for one timestep.
 
-    Builds P_M = sum_{k=0}^{taylor_order} (nu*dt)^k L^k / k!
-    as an LCU using S+/S- ladder primitives.
+    For bc='periodic': builds P_M = sum_{k=0}^{taylor_order} (nu*dt)^k L^k / k!
+    as an LCU using S+/S- ladder primitives (shift-operator Taylor expansion).
+
+    For bc='neumann': builds the Fourier-Bessel LCU in the DCT-II eigenbasis.
+    taylor_order controls the Bessel truncation order M (default 8 for neumann,
+    4 for periodic -- pass explicitly to override).
 
     Returns (circuit, lambda) where circuit has q system + m ancilla
     qubits, and post-selecting ancilla=|0>^m gives P_M / lambda.
-
-    bc must be 'periodic' for v1.
     """
+    if bc == "neumann":
+        # Neumann BC: use Fourier-Bessel LCU in DCT-II eigenbasis.
+        # Default to higher order for Neumann since Bessel converges faster.
+        neumann_order = max(taylor_order, 8)
+        return heat_lcu_neumann_step_circuit(
+            q, nu, dt, L_box, taylor_order=neumann_order,
+        )
     if bc != "periodic":
         raise NotImplementedError(
-            "LCU propagator requires periodic BC in v1"
+            f"LCU propagator: unsupported bc={bc!r}; "
+            "expected 'periodic' or 'neumann'"
         )
 
     ops, coeffs = heat_taylor_lcu_terms(

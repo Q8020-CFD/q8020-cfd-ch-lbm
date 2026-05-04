@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 from qiskit import QuantumCircuit, ClassicalRegister
-from qiskit.circuit.library import QFTGate, RYGate, UnitaryGate
+from qiskit.circuit.library import QFTGate, RYGate, UnitaryGate, XGate
 from scipy.linalg import expm
 
 from burgers_cole_hopf import build_laplacian_dense
@@ -43,7 +43,7 @@ def laplacian_eigenvalues(q: int, L_box: float) -> np.ndarray:
     return -(4.0 / dx**2) * np.sin(np.pi * j / N) ** 2
 
 
-# ── P2: Polynomial theta fit ────────────────────────────────────────
+# ── P2: Exact theta(k) ──────────────────────────────────────────────
 
 
 def compute_theta_exact(
@@ -81,7 +81,7 @@ def _mobius_transform(f_values: np.ndarray, q: int) -> np.ndarray:
     return a
 
 
-# ── P2: Conditional polynomial-Ry circuit ───────────────────────────
+# ── P2: Conditional Möbius-Ry circuit ───────────────────────────────
 
 
 def build_conditional_ry(
@@ -107,7 +107,7 @@ def build_conditional_ry(
     ml = _mobius_transform(ry_angles, q)
 
     n_total = max(*data_qubits, ancilla) + 1
-    qc = QuantumCircuit(n_total, name="poly_ry")
+    qc = QuantumCircuit(n_total, name="mobius_ry")
 
     for bitmask in range(N):
         angle = float(ml[bitmask])
@@ -128,6 +128,198 @@ def build_conditional_ry(
     return qc
 
 
+# ── DCT-II propagator (Neumann BC on phi) ──────────────────────────
+#
+# Historical note: F10-IMPLEMENTATION-SPEC §8 and FUTURE-WORK §4 call
+# this the "DST-based" path.  The actual transform is DCT-II — the CH
+# transform maps u-Dirichlet → phi-Neumann, and Neumann is diagonalised
+# by cosines (DCT), not sines (DST).  Eigenvalue formula is the same
+# for both; the basis differs.
+
+
+def dct_matrix(q: int) -> np.ndarray:
+    """Orthonormal DCT-II matrix on N = 2^q points.
+
+    C[k, n] = alpha_k * cos(pi * k * (2n + 1) / (2N)),
+    with alpha_0 = 1/sqrt(N), alpha_{k>0} = sqrt(2/N).
+    Real, orthogonal: C @ C.T = I.  C diagonalises the half-cell
+    mirror Neumann Laplacian to lambda_k = -(4/dx^2) sin^2(pi k/(2N)).
+    """
+    N = 1 << q
+    n = np.arange(N)
+    k = np.arange(N).reshape(-1, 1)
+    C = np.cos(np.pi * k * (2 * n + 1) / (2 * N))
+    C[0, :] *= 1.0 / np.sqrt(N)
+    C[1:, :] *= np.sqrt(2.0 / N)
+    return C
+
+
+def dct_circuit(q: int, inverse: bool = False) -> QuantumCircuit:
+    """DCT-II (or its inverse) as a (q+1)-qubit quantum circuit.
+
+    Klappenecker-Rotteler 2002 / Makhoul-style construction: the
+    DCT-II of length N=2^q is realised as the upper-left N×N block of
+    a (q+1)-qubit unitary, with an ancilla qubit (qubit q) that starts
+    and ends in |0> deterministically.  Total gate count is O(q^2),
+    versus O(4^q) for a UnitaryGate-wrapped dense matrix.
+
+    Construction (forward DCT, ancilla a = qubit q, data d = qubits 0..q-1):
+      1. H on a.
+      2. Conditional bit-complement on data (CNOTs from a to each d).
+      3. QFT^{-1} on all q+1 qubits.
+      4. Diagonal phase exp(-i pi k/(2N)) on the (q+1)-bit index k —
+         decomposes as one P gate per qubit.
+      5. Conditional negation P_neg|d> = |(N-d) mod N> on data
+         (CNOTs from a + a-controlled incrementer on d).
+      6. Conditional Ry(pi/2) on a (active when d != 0): apply Ry(pi/2)
+         then a (q-controlled, ctrl_state=0...0) Ry(-pi/2) to undo at d=0.
+
+    Returns a (q+1)-qubit circuit; bottom q qubits are data, top qubit
+    is the DCT ancilla.  ``Operator(dct_circuit(q)).data[:N, :N]`` equals
+    ``dct_matrix(q)`` (or its transpose if ``inverse=True``).
+    """
+    label = "DCT_dag" if inverse else "DCT"
+
+    qc = QuantumCircuit(q + 1, name=label)
+    data = list(range(q))
+    anc = q
+    N = 1 << q
+    M = 2 * N
+
+    # 1. Hadamard on ancilla.
+    qc.h(anc)
+
+    # 2. Conditional bit-complement on data (anc=1 → flip).
+    for d in data:
+        qc.cx(anc, d)
+
+    # 3. QFT^{-1} on all q+1 qubits.
+    qc.append(QFTGate(q + 1).inverse(), data + [anc])
+
+    # 4. Diagonal phase: per-qubit P(-pi * 2^j / M).
+    for j in range(q + 1):
+        qc.p(-np.pi * (1 << j) / M, j)
+
+    # 5. Conditional P_neg = increment ∘ bit_complement, controlled by anc=1.
+    for d in data:
+        qc.cx(anc, d)
+    # Conditional incrementer on data: cascade of MCX with anc as extra ctrl.
+    for i in reversed(range(q)):
+        controls = [anc] + data[:i]
+        target = data[i]
+        if len(controls) == 1:
+            qc.cx(controls[0], target)
+        else:
+            qc.append(XGate().control(len(controls)), controls + [target])
+
+    # 6. Conditional Ry(pi/2) on ancilla, active when data != 0.
+    qc.ry(np.pi / 2, anc)
+    qc.append(
+        RYGate(-np.pi / 2).control(q, ctrl_state="0" * q),
+        data + [anc],
+    )
+
+    if inverse:
+        return qc.inverse()
+    return qc
+
+
+def neumann_laplacian_eigenvalues(q: int, L_box: float) -> np.ndarray:
+    """Neumann (half-cell mirror) Laplacian eigenvalues on N = 2^q.
+
+    lambda_k = -(4/dx^2) sin^2(pi k / (2N)) for k = 0..N-1.
+    The k=0 mode is the constant-mode null space (lambda_0 = 0).
+    """
+    N = 1 << q
+    dx = L_box / N
+    k = np.arange(N)
+    return -(4.0 / dx**2) * np.sin(np.pi * k / (2 * N)) ** 2
+
+
+def compute_theta_dct(
+    nu: float,
+    dt: float,
+    q: int,
+    L_box: float,
+) -> np.ndarray:
+    """Rotation angles theta_k = arccos(exp(nu*lambda_k*dt)) for DCT.
+
+    Uses Neumann Laplacian eigenvalues.  k=0 mode has lambda=0, so
+    damping=1 and theta_0 = 0 (no rotation, mode preserved exactly).
+    """
+    evals = neumann_laplacian_eigenvalues(q, L_box)
+    damping = np.exp(nu * evals * dt)
+    damping = np.clip(damping, 0.0, 1.0)
+    return np.arccos(damping)
+
+
+def heat_dct_step_circuit(
+    q: int,
+    nu: float,
+    dt: float,
+    L_box: float,
+) -> QuantumCircuit:
+    """One Trotter layer for Neumann heat eq: DCT + cond-Ry + DCT^T.
+
+    Returns a circuit on q+1 qubits (data[0..q-1] + ancilla[q]) with
+    one classical bit for the ancilla measurement.  Mirrors
+    heat_qft_step_circuit but with DCT-II in place of QFT.
+    """
+    theta = compute_theta_dct(nu, dt, q, L_box)
+
+    data = list(range(q))
+    anc = q
+
+    qc = QuantumCircuit(q + 1, 1, name="heat_dct_step")
+    C = dct_matrix(q)
+    qc.append(UnitaryGate(C, label="DCT"), data)
+    cond_qc = build_conditional_ry(data, anc, theta)
+    qc.compose(cond_qc, inplace=True)
+    qc.append(UnitaryGate(C.T, label="DCT_dag"), data)
+    qc.measure(anc, 0)
+    qc.reset(anc)
+    return qc
+
+
+def heat_dct_full_circuit(
+    q: int,
+    nu: float,
+    T: float,
+    N_steps: int,
+    L_box: float,
+) -> QuantumCircuit:
+    """Full evolution circuit: N_steps DCT-diagonal Trotter layers."""
+    dt = T / N_steps
+
+    data = list(range(q))
+    anc = q
+
+    anc_cr = ClassicalRegister(N_steps, "anc_hist")
+    data_cr = ClassicalRegister(q, "data")
+    qc = QuantumCircuit(q + 1, name="heat_dct_full")
+    qc.add_register(anc_cr)
+    qc.add_register(data_cr)
+
+    theta = compute_theta_dct(nu, dt, q, L_box)
+    C = dct_matrix(q)
+    dct_gate = UnitaryGate(C, label="DCT")
+    dct_dag_gate = UnitaryGate(C.T, label="DCT_dag")
+    cond_qc = build_conditional_ry(data, anc, theta)
+
+    for step in range(N_steps):
+        qc.append(dct_gate, data)
+        qc.compose(cond_qc, inplace=True)
+        qc.append(dct_dag_gate, data)
+        qc.measure(anc, anc_cr[step])
+        if step < N_steps - 1:
+            qc.reset(anc)
+
+    for i in range(q):
+        qc.measure(data[i], data_cr[i])
+
+    return qc
+
+
 # ── P3: QFT-diagonal propagator step ────────────────────────────────
 
 
@@ -143,13 +335,16 @@ def heat_qft_step_circuit(
     Returns a circuit on q+1 qubits (data[0..q-1] + ancilla[q])
     with one classical bit for the ancilla measurement.
 
-    bc must be 'periodic'; raises NotImplementedError for 'dirichlet'.
+    bc='periodic' uses QFT (Fourier eigenbasis).
+    bc='neumann' (= phi-side of u-Dirichlet under CH) dispatches to
+    the DCT-II propagator path; see heat_dct_step_circuit.
     """
+    if bc == "neumann":
+        return heat_dct_step_circuit(q, nu, dt, L_box)
     if bc != "periodic":
         raise NotImplementedError(
-            "qft-diagonal requires periodic BC; Dirichlet needs a "
-            "DST-based propagator (see spec section 13 future work). "
-            "Use --propagator dense-block for Dirichlet."
+            f"heat_qft_step_circuit: unsupported bc={bc!r}; "
+            "expected 'periodic' or 'neumann'"
         )
 
     theta = compute_theta_exact(nu, dt, q, L_box)
@@ -188,11 +383,15 @@ def heat_qft_full_circuit(
 
     Returns circuit on q+1 qubits with N_steps classical bits
     (one per ancilla measurement) plus q bits for final data readout.
+
+    bc='neumann' dispatches to the DCT-II propagator path.
     """
+    if bc == "neumann":
+        return heat_dct_full_circuit(q, nu, T, N_steps, L_box)
     if bc != "periodic":
         raise NotImplementedError(
-            "qft-diagonal requires periodic BC; "
-            "see heat_qft_step_circuit."
+            f"heat_qft_full_circuit: unsupported bc={bc!r}; "
+            "expected 'periodic' or 'neumann'"
         )
 
     dt = T / N_steps
@@ -538,10 +737,18 @@ def _build_step_sv(
     taylor_order: truncation order for LCU Taylor propagator.
     """
     if propagator == "qft-diagonal":
-        theta = compute_theta_exact(nu, dt, q, L_box)
         data = list(range(q))
         anc = q
         qc = QuantumCircuit(q + 1)
+        if bc == "neumann":
+            theta = compute_theta_dct(nu, dt, q, L_box)
+            C = dct_matrix(q)
+            qc.append(UnitaryGate(C, label="DCT"), data)
+            cond_qc = build_conditional_ry(data, anc, theta)
+            qc.compose(cond_qc, inplace=True)
+            qc.append(UnitaryGate(C.T, label="DCT_dag"), data)
+            return qc
+        theta = compute_theta_exact(nu, dt, q, L_box)
         qc.append(QFTGate(q), data)
         cond_qc = build_conditional_ry(data, anc, theta)
         qc.compose(cond_qc, inplace=True)
@@ -843,12 +1050,17 @@ def _run_shots_chunked(
     source_fn=None,
     x: np.ndarray | None = None,
     taylor_order: int = 4,
+    use_mps_prep: bool = True,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Chunked evolution: K chunks of chunk_size steps each.
 
     Between chunks, classically read out post-selected amplitudes
     and re-prep as fresh IC.  No classical PDE physics — only
     amplitude IO (decode counts -> re-encode via MPS prep).
+
+    use_mps_prep: True (default) uses Ran 2020 MPS-to-circuit prep
+        (O(q*chi^2) gates).  False falls back to QuantumCircuit.
+        initialize (O(2^q) gates) for comparison.
     """
     if backend_type == "hardware":
         raise NotImplementedError(
@@ -885,11 +1097,16 @@ def _run_shots_chunked(
         t_start_chunk = global_step_start * dt
 
         # 1. Build prep circuit from current amplitudes
-        tensors = classical_to_mps(
-            psi_current, bond_dim=bond_dim, canonical="right",
-        )
-        prep_qc = mps_to_circuit(tensors)
-        n_bond = prep_qc.num_qubits - q
+        if use_mps_prep:
+            tensors = classical_to_mps(
+                psi_current, bond_dim=bond_dim, canonical="right",
+            )
+            prep_qc = mps_to_circuit(tensors)
+            n_bond = prep_qc.num_qubits - q
+        else:
+            prep_qc = QuantumCircuit(q, name="initialize_prep")
+            prep_qc.initialize(psi_current.tolist(), range(q))
+            n_bond = 0
 
         # 2. Build chunk_size-step evolution circuit
         T_chunk = dt * chunk_size
@@ -1058,6 +1275,7 @@ def _run_shots_batch(
     source_fn=None,
     x: np.ndarray | None = None,
     taylor_order: int = 4,
+    use_mps_prep: bool = True,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Batch shots readout per spec §7 (P-C optimised).
 
@@ -1070,12 +1288,13 @@ def _run_shots_batch(
     Murali/Meena AIAA-2026 Eq. 5-6 + Ref [27].  ``bond_dim=None``
     means full-rank (no truncation); finite values truncate the MPS.
 
+    use_mps_prep: True (default) uses the Ran 2020 MPS-to-circuit
+        path; False falls back to QuantumCircuit.initialize for
+        comparison with the dense O(2^q) state-prep baseline.
+
     Returns list of (phi_reconstructed, metrics) per snap_step.
     """
-    from q8020_cfd_qutil.circuit import (
-        transpile_circuit,
-        execute_circuit_counts,
-    )
+    from q8020_cfd_qutil.circuit import execute_circuit_counts
 
     from burgers_mps import (
         classical_to_mps, mps_to_circuit, normalize_state,
@@ -1083,13 +1302,18 @@ def _run_shots_batch(
 
     N = 1 << q
 
-    # --- MPS state prep (built once; shared across snap_steps) --------
+    # --- State prep (built once; shared across snap_steps) ------------
     psi_norm, _ = normalize_state(psi0)
-    tensors = classical_to_mps(
-        psi_norm, bond_dim=bond_dim, canonical="right",
-    )
-    prep_qc = mps_to_circuit(tensors)
-    n_bond = prep_qc.num_qubits - q
+    if use_mps_prep:
+        tensors = classical_to_mps(
+            psi_norm, bond_dim=bond_dim, canonical="right",
+        )
+        prep_qc = mps_to_circuit(tensors)
+        n_bond = prep_qc.num_qubits - q
+    else:
+        prep_qc = QuantumCircuit(q, name="initialize_prep")
+        prep_qc.initialize(psi_norm.tolist(), range(q))
+        n_bond = 0
 
     # --- Build all circuits -------------------------------------------
     print(
@@ -1172,44 +1396,83 @@ def _run_shots_batch(
             results.append((phi_hat, met))
         return results
 
-    # --- Transpile + execute each circuit via qutil --------------------
-    results: list[tuple[np.ndarray, dict[str, Any]]] = []
-    for idx, (raw_qc, s) in enumerate(zip(raw_circs, snap_steps)):
-        print(
-            f"[_run_shots_batch] circuit {idx + 1}/{len(raw_circs)} "
-            f"snap_step={s} raw depth={raw_qc.depth()} "
-            f"size={raw_qc.size()} transpiling "
-            f"(opt_level={optimization_level}) ...",
-            file=sys.stderr, flush=True,
+    # --- Single batched transpile of all circuits (P-C: F10-5) --------
+    # Pattern 1 from F10-REVIEW-PATCH §P-C: build the cumulative family
+    # {circuit_1 .. circuit_n_steps} once, transpile in one
+    # transpile([...], backend) call, then run each.  One AerSimulator()
+    # and one transpile() per run_cole_hopf_circuit_simulation invocation.
+    try:
+        from qiskit_aer import AerSimulator as _Aer
+        _skip_transpile = (
+            isinstance(backend, _Aer)
+            and propagator == "lcu"
         )
-        try:
-            from qiskit_aer import AerSimulator as _Aer
-            _skip_transpile = (
-                isinstance(backend, _Aer)
-                and propagator == "lcu"
-            )
-        except ImportError:
-            _skip_transpile = False
+    except ImportError:
+        _skip_transpile = False
 
-        t_tr = time.time()
-        if _skip_transpile:
-            qc_t = raw_qc
-            t_info = {
+    if _skip_transpile:
+        qc_t_list: list[QuantumCircuit] = list(raw_circs)
+        t_info_list: list[dict[str, Any]] = [
+            {
                 "wall_time": 0.0,
                 "optimization_level": optimization_level,
                 "skipped": "AerSimulator+LCU",
             }
-        else:
-            qc_t, t_info = transpile_circuit(
-                raw_qc, backend,
-                optimization_level=optimization_level,
-                seed_transpiler=seed,
-            )
+            for _ in raw_circs
+        ]
         print(
-            f"[_run_shots_batch] transpile "
-            f"{'skipped (Aer+LCU)' if _skip_transpile else 'done'}"
-            f" in {time.time() - t_tr:.1f}s; depth="
-            f"{qc_t.depth()} size={qc_t.size()}; "
+            f"[_run_shots_batch] transpile skipped (Aer+LCU); "
+            f"running {len(raw_circs)} circuit(s) ...",
+            file=sys.stderr, flush=True,
+        )
+    else:
+        from qiskit import transpile as _qiskit_transpile
+        from q8020_cfd_qutil.circuit import get_circuit_info
+
+        print(
+            f"[_run_shots_batch] batched transpile of "
+            f"{len(raw_circs)} circuit(s) "
+            f"(opt_level={optimization_level}) ...",
+            file=sys.stderr, flush=True,
+        )
+        t_tr = time.time()
+        kwargs: dict[str, Any] = {
+            "backend": backend,
+            "optimization_level": optimization_level,
+        }
+        if seed is not None:
+            kwargs["seed_transpiler"] = seed
+        qc_t_out = _qiskit_transpile(list(raw_circs), **kwargs)
+        # qiskit.transpile returns a list when given a list, but coerce
+        # defensively in case of a single-element edge case.
+        if isinstance(qc_t_out, QuantumCircuit):
+            qc_t_list = [qc_t_out]
+        else:
+            qc_t_list = list(qc_t_out)
+        transpile_wall = time.time() - t_tr
+        t_info_list = [
+            {
+                "wall_time": transpile_wall,
+                "optimization_level": optimization_level,
+                "before": get_circuit_info(raw),
+                "after": get_circuit_info(qc_t),
+            }
+            for raw, qc_t in zip(raw_circs, qc_t_list)
+        ]
+        print(
+            f"[_run_shots_batch] batched transpile done in "
+            f"{transpile_wall:.1f}s",
+            file=sys.stderr, flush=True,
+        )
+
+    # --- Execute each transpiled circuit -------------------------------
+    results: list[tuple[np.ndarray, dict[str, Any]]] = []
+    for idx, (raw_qc, qc_t, t_info, s) in enumerate(zip(
+        raw_circs, qc_t_list, t_info_list, snap_steps,
+    )):
+        print(
+            f"[_run_shots_batch] circuit {idx + 1}/{len(raw_circs)} "
+            f"snap_step={s} depth={qc_t.depth()} size={qc_t.size()}; "
             f"running shots={shots} ...",
             file=sys.stderr, flush=True,
         )
@@ -1255,6 +1518,335 @@ def _run_shots_batch(
     return results
 
 
+# ── F10-12: Hadamard-test-per-bin readout ───────────────────────────
+
+
+def _build_evolution_qc_unitary(
+    q: int,
+    nu: float,
+    dt: float,
+    n_steps: int,
+    L_box: float,
+    bc: str,
+    propagator: str,
+    encoding: str,
+    source_fn,
+    x: np.ndarray | None,
+    taylor_order: int,
+) -> tuple[QuantumCircuit, int]:
+    """Build measurement-free n_steps evolution on q + n_steps*a qubits.
+
+    Each step uses a fresh ancilla register (no mid-circuit measure /
+    reset) so the resulting circuit is a unitary suitable for use
+    inside a Hadamard test.  Post-selecting all ancillas to |0> at
+    the end is mathematically equivalent to the per-step reset path.
+
+    Returns (qc, n_anc_per_step).
+    """
+    from burgers_potential import potential_from_source
+
+    forced = source_fn is not None
+
+    if not forced:
+        step0 = _build_step_sv(
+            q, nu, dt, L_box, bc, propagator,
+            encoding=encoding, taylor_order=taylor_order,
+        )
+    else:
+        t_mid0 = 0.5 * dt
+        V_0 = potential_from_source(
+            source_fn, x, t_mid0, nu, bc=bc,
+        )
+        step0 = _build_step_sv(
+            q, nu, dt, L_box, bc, propagator,
+            encoding=encoding, V=V_0,
+            taylor_order=taylor_order,
+        )
+
+    n_anc_per_step = step0.num_qubits - q
+    n_total = q + n_steps * n_anc_per_step
+    qc = QuantumCircuit(n_total, name="evolution_unitary")
+
+    for s in range(n_steps):
+        if s == 0:
+            step_qc = step0
+        elif forced:
+            t_mid = (s + 0.5) * dt
+            V_n = potential_from_source(
+                source_fn, x, t_mid, nu, bc=bc,
+            )
+            step_qc = _build_step_sv(
+                q, nu, dt, L_box, bc, propagator,
+                encoding=encoding, V=V_n,
+                taylor_order=taylor_order,
+            )
+        else:
+            step_qc = step0
+
+        anc_start = q + s * n_anc_per_step
+        qubit_map = (
+            list(range(q))
+            + list(range(anc_start, anc_start + n_anc_per_step))
+        )
+        qc.compose(step_qc, qubits=qubit_map, inplace=True)
+
+    return qc, n_anc_per_step
+
+
+def hadamard_per_bin_circuit(
+    q: int,
+    prep_qc: QuantumCircuit,
+    n_bond: int,
+    evo_qc: QuantumCircuit,
+    n_anc_evo: int,
+    k: int,
+) -> QuantumCircuit:
+    """Hadamard test for Re(<k|U|psi0>) on basis index k.
+
+    Layout (qubit indices):
+      data:     0 .. q-1
+      bond:     q .. q + n_bond - 1            (state-prep ancillas)
+      evo_anc:  q + n_bond .. q + n_bond + n_anc_evo - 1
+      test:     last qubit
+
+    The inner unitary V = X_k * evo * prep is wrapped in a single
+    controlled gate whose control is the test qubit.  After two
+    Hadamards on the test qubit, the joint outcome statistics give
+
+        Re(psi_k) = P(test=0, data=0, bond=0, evo=0)
+                  - P(test=1, data=0, bond=0, evo=0)
+
+    where psi is the (unnormalised) post-selected amplitude vector.
+    The post-selection factor is absorbed naturally — no extra
+    sqrt(p_success) rescaling is needed.
+    """
+    n_inner = q + n_bond + n_anc_evo
+    n_total = n_inner + 1
+    test = n_total - 1
+
+    inner = QuantumCircuit(n_inner, name=f"W_k{k}")
+    inner.compose(
+        prep_qc, qubits=list(range(q + n_bond)), inplace=True,
+    )
+    evo_qubits = (
+        list(range(q))
+        + list(range(q + n_bond, q + n_bond + n_anc_evo))
+    )
+    inner.compose(evo_qc, qubits=evo_qubits, inplace=True)
+    for i in range(q):
+        if (k >> i) & 1:
+            inner.x(i)
+
+    qc = QuantumCircuit(n_total, n_total)
+    qc.h(test)
+    controlled = inner.to_gate().control(1)
+    qc.append(controlled, [test] + list(range(n_inner)))
+    qc.h(test)
+    qc.measure(list(range(n_total)), list(range(n_total)))
+    return qc
+
+
+def extract_hadamard_per_bin_amplitudes(
+    counts_per_k: list[dict[str, int]],
+    q: int,
+    n_bond: int,
+    n_anc_evo: int,
+    shots: int,
+    phi_norm: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Reconstruct phi from per-bin Hadamard-test counts.
+
+    counts_per_k[k]: counts dict from running the k-th circuit.
+    Bitstring layout (Qiskit little-endian): bit 0 (rightmost char)
+    is data qubit 0; the leftmost char is the test qubit.  Returns
+    (phi_hat, info) where phi_hat is real-valued (phi_norm * Re psi_k)
+    and info carries aggregate diagnostics.
+    """
+    N = 1 << q
+    n_inner = q + n_bond + n_anc_evo
+    re_psi = np.zeros(N)
+    n_kept_total = 0
+    n_test_zero = 0
+    n_test_one = 0
+
+    for k, counts in enumerate(counts_per_k):
+        n0 = 0
+        n1 = 0
+        for bitstr, cnt in counts.items():
+            bits = bitstr.replace(" ", "")
+            if len(bits) < n_inner + 1:
+                continue
+            test_bit = int(bits[0])
+            data_bits = bits[-q:] if q > 0 else ""
+            anc_bits = bits[1:-q] if q > 0 else bits[1:]
+            data_idx = int(data_bits, 2) if data_bits else 0
+            if data_idx != 0:
+                continue
+            if not all(c == "0" for c in anc_bits):
+                continue
+            if test_bit == 0:
+                n0 += cnt
+            else:
+                n1 += cnt
+
+        denom = max(shots, 1)
+        re_psi[k] = (n0 - n1) / denom
+        n_kept_total += n0 + n1
+        n_test_zero += n0
+        n_test_one += n1
+
+    phi_hat = phi_norm * re_psi
+    info: dict[str, Any] = {
+        "n_kept_total": n_kept_total,
+        "n_test_zero": n_test_zero,
+        "n_test_one": n_test_one,
+        "p_kept_per_bin_mean": (
+            n_kept_total / (len(counts_per_k) * shots)
+            if counts_per_k and shots > 0 else 0.0
+        ),
+    }
+    return phi_hat, info
+
+
+def _run_shots_hadamard_per_bin(
+    psi0: np.ndarray,
+    q: int,
+    nu: float,
+    dt: float,
+    snap_steps: list[int],
+    L_box: float,
+    phi_norm: float,
+    bc: str,
+    propagator: str,
+    shots: int,
+    bond_dim: int | None = None,
+    encoding: str = "binary",
+    backend: Any = None,
+    backend_type: str = "sim",
+    backend_name: str | None = None,
+    optimization_level: int = 1,
+    seed: int | None = None,
+    source_fn=None,
+    x: np.ndarray | None = None,
+    taylor_order: int = 4,
+    use_mps_prep: bool = True,
+) -> list[tuple[np.ndarray, dict[str, Any]]]:
+    """Hadamard-test-per-bin readout driver (F10-12).
+
+    For each snap_step s, builds N Hadamard-test circuits (one per
+    basis index k) wrapping the full state-prep + s-step evolution,
+    runs all of them, and reconstructs a real-valued phi_hat by
+    differencing test-ancilla outcomes per bin.
+
+    Aimed at the low-nu shots regime where direct amplitude readout
+    has poor signal-to-noise: the Hadamard test recovers Re(psi_k)
+    (signed) in linear shots per bin, at the cost of N circuits per
+    snap_step.
+    """
+    if backend_type == "hardware":
+        raise NotImplementedError(
+            "hadamard_per_bin readout: hardware backends not "
+            "supported yet (would need O(N) job submissions)."
+        )
+
+    from q8020_cfd_qutil.circuit import (
+        transpile_circuit,
+        execute_circuit_counts,
+    )
+    from burgers_mps import (
+        classical_to_mps, mps_to_circuit, normalize_state,
+    )
+
+    N = 1 << q
+
+    psi_normed, _ = normalize_state(psi0)
+    if use_mps_prep:
+        tensors = classical_to_mps(
+            psi_normed, bond_dim=bond_dim, canonical="right",
+        )
+        prep_qc = mps_to_circuit(tensors)
+        n_bond = prep_qc.num_qubits - q
+    else:
+        prep_qc = QuantumCircuit(q, name="initialize_prep")
+        prep_qc.initialize(psi_normed.tolist(), range(q))
+        n_bond = 0
+
+    results: list[tuple[np.ndarray, dict[str, Any]]] = []
+
+    for s in snap_steps:
+        t_build = time.time()
+        evo_qc, n_anc_evo = _build_evolution_qc_unitary(
+            q, nu, dt, s, L_box, bc, propagator,
+            encoding, source_fn, x, taylor_order,
+        )
+        print(
+            f"[_run_shots_hadamard_per_bin] snap_step={s} "
+            f"q={q} n_bond={n_bond} n_anc_evo={n_anc_evo} "
+            f"building {N} Hadamard circuits ...",
+            file=sys.stderr, flush=True,
+        )
+
+        per_k_circs: list[QuantumCircuit] = []
+        for k in range(N):
+            qc_k = hadamard_per_bin_circuit(
+                q, prep_qc, n_bond, evo_qc, n_anc_evo, k,
+            )
+            per_k_circs.append(qc_k)
+        print(
+            f"[_run_shots_hadamard_per_bin] built {N} circuits in "
+            f"{time.time() - t_build:.1f}s",
+            file=sys.stderr, flush=True,
+        )
+
+        counts_per_k: list[dict[str, int]] = []
+        t_info_list: list[dict[str, Any]] = []
+        exec_info_list: list[dict[str, Any]] = []
+        t_run = time.time()
+        for k, qc_k in enumerate(per_k_circs):
+            qc_t, t_info = transpile_circuit(
+                qc_k, backend,
+                optimization_level=optimization_level,
+                seed_transpiler=seed,
+            )
+            counts, exec_info = execute_circuit_counts(
+                qc_t, backend, shots=shots, seed=seed,
+            )
+            counts_per_k.append(counts)
+            t_info_list.append(t_info)
+            exec_info_list.append(exec_info)
+            if (k + 1) % max(1, N // 8) == 0 or k == N - 1:
+                print(
+                    f"[_run_shots_hadamard_per_bin] snap_step={s} "
+                    f"bin {k + 1}/{N} elapsed="
+                    f"{time.time() - t_run:.1f}s",
+                    file=sys.stderr, flush=True,
+                )
+
+        phi_hat, agg = extract_hadamard_per_bin_amplitudes(
+            counts_per_k, q, n_bond, n_anc_evo, shots, phi_norm,
+        )
+
+        met: dict[str, Any] = {
+            "shots": shots,
+            "shots_per_bin": shots,
+            "n_bins": N,
+            "n_steps": s,
+            "step": s,
+            "readout": "hadamard_per_bin",
+            "n_kept_total": agg["n_kept_total"],
+            "n_test_zero": agg["n_test_zero"],
+            "n_test_one": agg["n_test_one"],
+            "p_kept_per_bin_mean": agg["p_kept_per_bin_mean"],
+            "p_success": agg["p_kept_per_bin_mean"],
+            "transpile_wall_total": sum(
+                ti.get("wall_time", 0.0) for ti in t_info_list
+            ),
+        }
+        results.append((phi_hat, met))
+
+    return results
+
+
 def run_cole_hopf_circuit_simulation(
     u0: np.ndarray,
     x: np.ndarray,
@@ -1277,6 +1869,8 @@ def run_cole_hopf_circuit_simulation(
     chunk_size: int = 10,
     phi_modes: int = 0,
     taylor_order: int = 4,
+    use_mps_prep: bool = True,
+    readout: str = "direct",
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
 
@@ -1288,6 +1882,13 @@ def run_cole_hopf_circuit_simulation(
     shots>0: full circuit with measurements, post-select on ancilla
              history = all |0>, reconstruct phi from counts (§7).
              Only final-time output (no intermediate snapshots).
+
+    bond_dim: MPS truncation bond dimension; None = full rank.  Used
+        only when use_mps_prep=True.
+    use_mps_prep: True (default) prepares the initial state via the
+        Ran 2020 MPS-to-circuit pipeline (O(q*chi^2) gates).  False
+        falls back to QuantumCircuit.initialize (O(2^q) gates) so
+        the two prep paths can be A/B compared.
 
     Returns (solutions, metrics) matching the run_simulation interface.
     """
@@ -1307,10 +1908,12 @@ def run_cole_hopf_circuit_simulation(
 
     # §8: Dirichlet u=0 maps to Neumann dphi/dx=0 on phi.
     phi_bc = "neumann" if bc == "dirichlet" else bc
-    if phi_bc != "periodic" and propagator == "qft-diagonal":
+    # qft-diagonal + neumann uses the DCT-II propagator (see
+    # heat_dct_step_circuit); periodic uses QFT.  No NotImplementedError.
+    if phi_bc not in ("periodic", "neumann") and propagator == "qft-diagonal":
         raise NotImplementedError(
-            "qft-diagonal requires periodic BC; "
-            "use --propagator dense-block for --bc dirichlet"
+            f"qft-diagonal supports periodic and dirichlet (Neumann-on-phi);"
+            f" got bc={bc!r}"
         )
 
     # Source guard: V is position-diagonal, L is Fourier-diagonal;
@@ -1322,12 +1925,6 @@ def run_cole_hopf_circuit_simulation(
             "Source forcing requires --propagator dense-block "
             "or lcu in this release. qft-diagonal+source is "
             "on the roadmap."
-        )
-
-    # LCU requires periodic BC in v1.
-    if propagator == "lcu" and phi_bc != "periodic":
-        raise NotImplementedError(
-            "LCU propagator requires periodic BC in v1"
         )
 
     # Encoding guard: QFT diagonalises L only in binary basis.
@@ -1380,7 +1977,35 @@ def run_cole_hopf_circuit_simulation(
         if n_steps not in snap_steps:
             snap_steps.append(n_steps)
 
-        if evolution_mode == "chunked":
+        if readout not in ("direct", "hadamard_per_bin"):
+            raise ValueError(
+                f"unknown readout={readout!r}; expected "
+                f"'direct' or 'hadamard_per_bin'"
+            )
+        if readout == "hadamard_per_bin" and (
+            evolution_mode == "chunked"
+        ):
+            raise NotImplementedError(
+                "hadamard_per_bin readout requires "
+                "evolution_mode=single (chunked v1 unsupported)"
+            )
+
+        if readout == "hadamard_per_bin":
+            batch_results = _run_shots_hadamard_per_bin(
+                psi0, q, nu, dt, snap_steps, L_box,
+                phi_norm,
+                bc=phi_bc, propagator=propagator,
+                shots=shots,
+                bond_dim=bond_dim, encoding=encoding,
+                backend=backend, backend_type=backend_type,
+                backend_name=backend_name,
+                optimization_level=optimization_level,
+                seed=seed,
+                source_fn=source_fn, x=x,
+                taylor_order=taylor_order,
+                use_mps_prep=use_mps_prep,
+            )
+        elif evolution_mode == "chunked":
             # Validate alignment
             if n_steps % chunk_size != 0:
                 raise ValueError(
@@ -1408,6 +2033,7 @@ def run_cole_hopf_circuit_simulation(
                 seed=seed,
                 source_fn=source_fn, x=x,
                 taylor_order=taylor_order,
+                use_mps_prep=use_mps_prep,
             )
         else:
             batch_results = _run_shots_batch(
@@ -1422,6 +2048,7 @@ def run_cole_hopf_circuit_simulation(
                 seed=seed,
                 source_fn=source_fn, x=x,
                 taylor_order=taylor_order,
+                use_mps_prep=use_mps_prep,
             )
 
         for (phi_hat, met), s in zip(batch_results, snap_steps):
@@ -1449,6 +2076,7 @@ def run_cole_hopf_circuit_simulation(
         psi0, q, nu, dt, n_steps, L_box,
         bc=phi_bc, propagator=propagator,
         snapshot_interval=snapshot_interval,
+        use_mps_prep=use_mps_prep,
         bond_dim=bond_dim, encoding=encoding,
         source_fn=source_fn, x=x,
         taylor_order=taylor_order,

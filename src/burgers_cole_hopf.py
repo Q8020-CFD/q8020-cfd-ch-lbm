@@ -211,17 +211,18 @@ def build_laplacian_dense(
         sm = shift_matrix(N, -1, bc="periodic")
         L = (sp + sm - 2.0 * np.eye(N)) / dx**2
     elif bc == "neumann":
+        # Half-cell mirror BC: ghost u[-1]=u[0], u[N]=u[N-1].
+        # Boundary rows are [-1, 1, ...] and [..., 1, -1]; symmetric,
+        # row sums = 0, all eigenvalues <= 0.  Diagonalised by DCT-II.
         L = np.zeros((N, N))
         for i in range(N):
             L[i, i] = -2.0
             if i > 0:
                 L[i, i - 1] = 1.0
-            else:
-                L[i, i + 1] += 1.0  # reflect: ghost node = node 1
             if i < N - 1:
                 L[i, i + 1] = 1.0
-            else:
-                L[i, i - 1] += 1.0  # reflect: ghost node = node N-2
+        L[0, 0] = -1.0
+        L[N - 1, N - 1] = -1.0
         L /= dx**2
     else:
         raise ValueError(f"Unknown bc: {bc!r}; expected 'periodic' or 'neumann'")
