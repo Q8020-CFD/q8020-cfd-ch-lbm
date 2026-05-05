@@ -33,6 +33,7 @@ from burgers_classical import (
     initial_condition_multimode,
     source_term_sine,
     solve_burgers,
+    solve_burgers_godunov,
 )
 from burgers_fw import BurgersConfig, run_simulation_fw
 from burgers_postprocess import BurgersPostProcessor
@@ -96,6 +97,15 @@ if __name__ == "__main__":
         help="Velocity spectrum exponent A_k~k^-alpha (multimode IC only)",
     )
     parser.add_argument(
+        "--ic-amplitude", type=float, default=1.0,
+        help="Scale factor for IC amplitude (LBM requires < 1.0)",
+    )
+    parser.add_argument(
+        "--classical-baseline", type=str, default="ftcs",
+        choices=["ftcs", "godunov"],
+        help="Classical reference solver for error computation",
+    )
+    parser.add_argument(
         "--source", type=str, default="sine", choices=["sine", "none"],
         help="Source term",
     )
@@ -113,7 +123,7 @@ if __name__ == "__main__":
         choices=[
             "shift", "quantum_exact", "quantum_circuit", "mps",
             "tebd", "tebd_circuit", "cole_hopf",
-            "cole_hopf_circuit",
+            "cole_hopf_circuit", "qlbm", "qlbm_circuit",
         ],
         help="Evolution method",
     )
@@ -231,6 +241,8 @@ if __name__ == "__main__":
         )
     else:
         raise ValueError(f"Unknown IC: {args.ic}")
+    if args.ic_amplitude != 1.0:
+        u0 = u0 * args.ic_amplitude
     source_fn = {"sine": source_term_sine, "none": None}[args.source]
 
     # Shock formation time: t_shock = 1 / max|du0/dx| (inviscid estimate).
@@ -253,12 +265,21 @@ if __name__ == "__main__":
         file=sys.stderr, flush=True,
     )
 
-    # Always run classical FTCS baseline
-    print("[burgers] running classical FTCS (Forward-Time Central-Space) baseline ...", file=sys.stderr, flush=True)
-    t0 = time.time()
-    sols_classical = solve_burgers(
-        u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
+    # Classical baseline
+    bl = args.classical_baseline
+    print(
+        f"[burgers] running classical {bl.upper()} baseline ...",
+        file=sys.stderr, flush=True,
     )
+    t0 = time.time()
+    if bl == "godunov":
+        sols_classical = solve_burgers_godunov(
+            u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
+        )
+    else:
+        sols_classical = solve_burgers(
+            u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
+        )
     t_classical = time.time() - t0
     print(f"[burgers] classical done {t_classical:.2f}s", file=sys.stderr, flush=True)
 

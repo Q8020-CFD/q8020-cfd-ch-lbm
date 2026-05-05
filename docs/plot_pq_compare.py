@@ -41,9 +41,12 @@ def _find_entry(entries: list[dict], key: str) -> dict:
 
 
 def _extract_params(meta: dict) -> dict | None:
+    # Prefer the solver-emitted case (has dt, n_steps, etc.)
     for c in meta.get('case', []):
         if c.get('_source') == 'solver':
             return c
+    # Fall back to sweep params
+    for c in meta.get('case', []):
         params = c.get('params', {})
         if params:
             return {k.lstrip('-'): v for k, v in params.items()
@@ -59,21 +62,24 @@ def _load_case(case_dir: Path) -> dict | None:
 
 
 def _find_sibling_cases(run_dir: Path, prefix: str) -> dict[str, dict]:
-    """Find all case dirs in run_dir whose group name starts with prefix."""
-    cases = {}
+    """Find all case dirs in run_dir whose method is relevant.
+
+    The sweeper stores cases as flat experiment-ID dirs (not nested
+    under group names), so we scan all case dirs and key by method.
+    """
+    cases: dict[str, dict] = {}
     case_dirs, no_meta = _walk_case_dirs(run_dir)
     for cd in case_dirs + no_meta:
         cd = Path(cd)
         if not cd.is_dir():
             continue
-        # Group name is the top-level dir under run_dir
-        rel = cd.relative_to(run_dir)
-        group = rel.parts[0] if rel.parts else ''
-        if not group.startswith(prefix):
-            continue
         meta = _load_case(cd)
-        if meta:
-            cases[group] = meta
+        if not meta:
+            continue
+        p = _extract_params(meta) or {}
+        method = p.get('method', '')
+        if method:
+            cases[method] = meta
     return cases
 
 
@@ -106,15 +112,10 @@ def main() -> None:
         run_dir = Path(pp['run_dir'])
         outfile = args.outfile or str(run_dir / 'pq_compare.gif')
 
-        # Find sibling cases with pq_compare prefix
+        # Find sibling cases (keyed by method)
         siblings = _find_sibling_cases(run_dir, 'pq_compare')
-        for gname, meta in siblings.items():
-            p = _extract_params(meta) or {}
-            method = p.get('method', '')
-            if method == 'quantum_circuit':
-                trotter_meta = meta
-            elif method == 'cole_hopf_circuit':
-                ch_meta = meta
+        trotter_meta = siblings.get('quantum_circuit')
+        ch_meta = siblings.get('cole_hopf_circuit')
 
     if args.trotter_dir:
         trotter_meta = _load_case(args.trotter_dir.expanduser().resolve())
@@ -144,9 +145,11 @@ def main() -> None:
     nu = float(ref_params.get('nu', 1e-2))
     bc = ref_params.get('bc', 'dirichlet')
     n_steps = int(ref_params.get('n_steps', 0))
+    shots = int(ref_params.get('shots', 0))
+    q = int(ref_params.get('q', 0)) or int(np.log2(len(x)))
 
-    # Compute classical FTCS reference
-    from burgers_classical import solve_burgers
+    # Compute classical references
+    from burgers_classical import solve_burgers, solve_burgers_godunov
     u0 = None
     for label, (xg, frames, _) in datasets.items():
         if 0 in frames:
@@ -157,8 +160,22 @@ def main() -> None:
         print("No step-0 IC found.", file=sys.stderr)
         sys.exit(1)
 
-    sols_classical = solve_burgers(u0, x, nu, dt, n_steps,
-                                   source_fn=None, bc=bc)
+    sols_godunov_list = solve_burgers_godunov(
+        u0, x, nu, dt, n_steps, source_fn=None, bc=bc,
+    )
+    sols_classical = {i: sols_godunov_list[i]
+                      for i in range(len(sols_godunov_list))}
+    sols_ftcs_list = solve_burgers(
+        u0, x, nu, dt, n_steps, source_fn=None, bc=bc,
+    )
+    sols_ftcs = {i: sols_ftcs_list[i]
+                 for i in range(len(sols_ftcs_list))}
+    # Track FTCS divergence step
+    ftcs_diverged: int | None = None
+    for i in range(len(sols_ftcs_list)):
+        if not np.all(np.isfinite(sols_ftcs_list[i])):
+            ftcs_diverged = i
+            break
 
     # Unify step keys across all datasets
     all_step_sets = [set(frames.keys()) for _, frames, _ in datasets.values()]
@@ -168,27 +185,26 @@ def main() -> None:
         # Fall back to union
         common_steps = sorted(set.union(*all_step_sets))
 
-    # Truncate at divergence
+    # Per-method divergence tracking (don't let one method kill others)
     amp0 = max(np.max(np.abs(u0)), 1.0)
     amp_limit = 10.0 * amp0
+    diverged: dict[str, int | None] = {lab: None for lab in datasets}
     valid_steps = []
     for s in common_steps:
-        ok = True
-        for _, frames, _ in datasets.values():
-            if s in frames:
+        # Track per-method divergence
+        for label, (_, frames, _) in datasets.items():
+            if diverged[label] is None and s in frames:
                 u = frames[s]
-                if not (np.all(np.isfinite(u)) and np.max(np.abs(u)) < amp_limit):
-                    ok = False
-                    break
+                if not (np.all(np.isfinite(u))
+                        and np.max(np.abs(u)) < amp_limit):
+                    diverged[label] = s
+        # Stop only when classical blows up
         if s <= n_steps:
             cl = sols_classical.get(s)
             if cl is not None and not (np.all(np.isfinite(cl))
                                        and np.max(np.abs(cl)) < amp_limit):
-                ok = False
-        if ok:
-            valid_steps.append(s)
-        else:
-            break
+                break
+        valid_steps.append(s)
     if not valid_steps:
         print("No valid frames.", file=sys.stderr)
         sys.exit(1)
@@ -199,10 +215,14 @@ def main() -> None:
                 and np.any(np.isfinite(frames[s]))]
         return max(vals) if vals else 1.0
 
-    all_ymax = [_ymax(f, valid_steps) for _, f, _ in datasets.values()]
+    all_ymax = []
+    for label, (_, f, _) in datasets.items():
+        div_s = diverged[label]
+        safe = [s for s in valid_steps if div_s is None or s < div_s]
+        all_ymax.append(_ymax(f, safe) if safe else 1.0)
     cl_ymax = max(np.abs(sols_classical.get(s, np.zeros_like(u0))).max()
                   for s in valid_steps if s in sols_classical)
-    ymax = max(max(all_ymax), cl_ymax) * 1.15
+    ymax = min(max(max(all_ymax), cl_ymax) * 1.15, 2.0 * amp0)
 
     # Colors for methods
     colors = {
@@ -221,9 +241,10 @@ def main() -> None:
         gridspec_kw={"height_ratios": [3, 1]},
     )
     N = len(u0)
+    shots_label = "SV" if shots == 0 else f"{shots:,} shots"
     fig.suptitle(
-        f"Pure Quantum Pathways: q=5 (N={N}), "
-        f"$\\nu$={nu:.0e}, Dirichlet BC, unforced",
+        f"Pure Quantum Pathways: q={q} (N={N}), "
+        f"$\\nu$={nu:.0e}, {bc} BC, {shots_label}",
         fontsize=12, fontweight="bold",
     )
 
@@ -235,9 +256,13 @@ def main() -> None:
     # IC
     ax_u.plot(x, u0, 'k--', alpha=0.2, lw=1, label='IC')
 
-    # Classical FTCS
+    # Classical Godunov (reference)
     cl_line, = ax_u.plot([], [], 'b-', lw=1.5, alpha=0.6,
-                         label='Classical FTCS')
+                         label='Classical Godunov')
+
+    # Classical FTCS (overlay, disappears at blowup)
+    ftcs_line, = ax_u.plot([], [], '-', color='#2ca02c', lw=1.0,
+                           alpha=0.5, label='Classical FTCS')
 
     # Quantum method lines
     q_lines = {}
@@ -267,7 +292,7 @@ def main() -> None:
     for label in datasets:
         c = colors.get(label, '#333333')
         line, = ax_err.plot([], [], '-', color=c, lw=1.5,
-                            label=f'{label} vs FTCS')
+                            label=f'{label} vs Godunov')
         err_lines[label] = line
 
     ax_err.set_xlim(times[0], times[-1])
@@ -276,9 +301,12 @@ def main() -> None:
     if all_errs.size == 0:
         all_errs = np.array([1e-6])
     ax_err.set_yscale('log')
-    ax_err.set_ylim(max(all_errs.min() * 0.5, 1e-12), all_errs.max() * 2)
+    ax_err.set_ylim(
+        max(all_errs.min() * 0.5, 1e-12),
+        min(all_errs.max() * 2, 10.0),
+    )
     ax_err.set_xlabel("Time")
-    ax_err.set_ylabel("Rel. L2 error vs FTCS")
+    ax_err.set_ylabel("Rel. L2 error vs Godunov")
     ax_err.legend(loc='upper left', fontsize=8)
     ax_err.grid(alpha=0.2)
 
@@ -289,17 +317,30 @@ def main() -> None:
         t = s * dt
         pct = 100.0 * t / t_shock
 
-        # Classical
+        # Classical Godunov
         cl = sols_classical.get(s, np.zeros_like(u0))
         cl_line.set_data(x, cl)
 
-        # Quantum methods
+        # Classical FTCS (hide after divergence)
+        if ftcs_diverged is not None and s >= ftcs_diverged:
+            ftcs_line.set_data([], [])
+        else:
+            ftcs_line.set_data(x, sols_ftcs.get(s, np.zeros_like(u0)))
+
+        # Quantum methods (stop updating after divergence)
         parts = []
         for label, (_, frames, _) in datasets.items():
-            if s in frames:
+            div_step = diverged.get(label)
+            if div_step is not None and s >= div_step:
+                q_lines[label].set_data([], [])
+                parts.append(f"{label}: DIVERGED")
+            elif s in frames:
                 q_lines[label].set_data(x, frames[s])
-            e = err_data[label][idx]
-            parts.append(f"{label}: {e:.2e}")
+                e = err_data[label][idx]
+                parts.append(f"{label}: {e:.2e}")
+            else:
+                e = err_data[label][idx]
+                parts.append(f"{label}: {e:.2e}")
 
         # Error lines
         for label in datasets:
@@ -309,7 +350,7 @@ def main() -> None:
             f"step {s}/{n_steps}  t={t:.4f} ({pct:.0f}% T_shock)\n"
             + "  ".join(parts)
         )
-        return tuple([cl_line, time_text]
+        return tuple([cl_line, ftcs_line, time_text]
                      + list(q_lines.values())
                      + list(err_lines.values()))
 

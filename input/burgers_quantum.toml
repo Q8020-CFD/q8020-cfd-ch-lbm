@@ -978,9 +978,9 @@ _group_postproc = ["python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolu
 
 # ── Pure quantum pathway comparison (q=5, Dirichlet, unforced) ──────────────
 # Matched pair: same IC, BC, nu, grid, time horizon.  Differs only in algorithm.
-# Run both, then the postproc overlays them + classical FTCS reference.
-# nu=1e-2 keeps Cole-Hopf forward transform well-conditioned.
-# save-every=1 for full movie.  shock-pct=100 → T_end ≈ t_shock.
+# Run both, then the postproc overlays them + classical Godunov/FTCS reference.
+# nu=1e-2 keeps Cole-Hopf forward transform well-conditioned (Re=100).
+# save-every=1 for full movie.  shock-pct=100 → T_end = t_shock.
 
 [pq_compare_q5_trotter]
 "--q" = 5
@@ -992,6 +992,7 @@ _group_postproc = ["python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolu
 "--bc" = "dirichlet"
 "--source" = "none"
 "--ic" = "sine"
+"--shots" = 0
 "--save-every" = 1
 
 [pq_compare_q5_cole_hopf]
@@ -1003,7 +1004,179 @@ _group_postproc = ["python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolu
 "--bc" = "dirichlet"
 "--source" = "none"
 "--ic" = "sine"
+"--shots" = 0
 "--save-every" = 1
 "--lcu-taylor-order" = 4
 _group_postproc = ["python ./q8020-mps-burgers/docs/plot_pq_compare.py"]
+
+# ── Method comparison: Trotter vs Cole-Hopf vs LBM at q=5 ────────────────────
+# Same IC (sine, amplitude=0.3 for LBM stability: D1Q3 requires Ma < 1),
+# periodic BC, nu=1e-2, source=none, shock_pct=100.
+# Godunov baseline (shock-capturing, conservative) as classical reference.
+
+[method_compare_q5_trotter]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "periodic"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+
+[method_compare_q5_cole_hopf]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+
+[method_compare_q5_qlbm]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/docs/plot_method_compare.py"]
+
+# ── Method comparison v2: all-three-compatible ────────────────────────────────
+# PT + Cole-Hopf + LBM on the same IC/BC/nu.
+# Constraints: periodic (CH only), nu>=1e-3 (CH float64), amp<1 (LBM Ma).
+# Verified standalone: all three produce clean, non-oscillating results.
+
+[method_compare_v2_trotter]
+"--q" = 5
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+"--shots" = 0
+
+[method_compare_v2_cole_hopf]
+"--q" = 5
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+
+[method_compare_v2_qlbm]
+"--q" = 5
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--method" = "qlbm"
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/docs/plot_method_compare.py"]
+
+# ── F11 QLBM (Quantum Lattice Boltzmann) ─────────────────────────────────────
+# D1Q3 stencil, BGK collision, periodic streaming.
+# nu=1e-2 keeps tau well above 0.5 (stable regime).
+
+[qlbm_classical_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 2
+
+[qlbm_classical_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 4
+
+[qlbm_classical_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 8
+
+# QLBM circuit (statevector, Option A dense collision)
+[qlbm_circuit_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 2
+
+[qlbm_circuit_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 4
+
+[qlbm_circuit_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 8
+
+# QLBM Dirichlet (bounce-back BCs)
+[qlbm_classical_q5_dirichlet]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--save-every" = 8
+
+[qlbm_circuit_q5_dirichlet]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 8
 

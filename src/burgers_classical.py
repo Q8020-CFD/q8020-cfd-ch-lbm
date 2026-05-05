@@ -191,6 +191,109 @@ def solve_burgers(
     return solutions
 
 
+def _godunov_flux_burgers(
+    u_L: np.ndarray, u_R: np.ndarray
+) -> np.ndarray:
+    """Vectorized exact Godunov flux for f(u) = u^2/2.
+
+    Solves the Riemann problem at each interface:
+      shock (u_L >= u_R): upwind by Rankine-Hugoniot speed
+      rarefaction (u_L < u_R): upwind, with f=0 at sonic point
+    """
+    f_L = 0.5 * u_L**2
+    f_R = 0.5 * u_R**2
+    s = 0.5 * (u_L + u_R)
+
+    shock = u_L >= u_R
+    rar = ~shock
+
+    flux = np.zeros_like(u_L)
+    flux = np.where(shock & (s >= 0), f_L, flux)
+    flux = np.where(shock & (s < 0), f_R, flux)
+    flux = np.where(rar & (u_L >= 0), f_L, flux)
+    flux = np.where(rar & (u_R <= 0), f_R, flux)
+    # sonic rarefaction (u_L < 0 < u_R): f(0)=0, already 0
+    return flux
+
+
+def solve_burgers_godunov(
+    u0: np.ndarray,
+    x: np.ndarray,
+    nu: float,
+    dt: float,
+    n_steps: int,
+    source_fn=None,
+    bc: str = "periodic",
+) -> list[np.ndarray]:
+    """Godunov + explicit diffusion for 1D viscous Burgers.
+
+    Conservative shock-capturing scheme. Unconditionally stable for
+    the advective part (exact Riemann solver). Diffusion is explicit
+    central-difference (stable when nu*dt/dx^2 < 0.5).
+
+    Same signature and return convention as solve_burgers (FTCS).
+    """
+    dx = x[1] - x[0]
+    solutions = [u0.copy()]
+    u = u0.copy()
+
+    for step in range(n_steps):
+        t = step * dt
+        g = (
+            source_fn(x, t)
+            if source_fn is not None
+            else None
+        )
+
+        # Ghost cells for flux computation
+        if bc == "periodic":
+            u_ext = np.concatenate(([u[-1]], u, [u[0]]))
+        else:
+            u_ext = np.concatenate(([0.0], u, [0.0]))
+
+        # Godunov flux at N+1 interfaces
+        F = _godunov_flux_burgers(u_ext[:-1], u_ext[1:])
+
+        # Conservative advection update
+        u_new = u - (dt / dx) * (F[1:] - F[:-1])
+
+        # Explicit central-difference diffusion
+        if bc == "periodic":
+            lap = (
+                np.roll(u, -1) + np.roll(u, 1) - 2 * u
+            ) / dx**2
+        else:
+            u_ext_d = np.concatenate(([0.0], u, [0.0]))
+            lap = (
+                u_ext_d[2:] + u_ext_d[:-2] - 2 * u
+            ) / dx**2
+        u_new += dt * nu * lap
+
+        if g is not None:
+            u_new += dt * g
+
+        if bc == "dirichlet":
+            u_new[0] = 0.0
+            u_new[-1] = 0.0
+
+        u = u_new
+        if not np.all(np.isfinite(u)):
+            import sys
+
+            print(
+                f"[burgers] Godunov blowup at step {step + 1}"
+                f"/{n_steps} (t={t + dt:.4e}); padding with NaN",
+                file=sys.stderr,
+                flush=True,
+            )
+            nan_fill = np.full_like(u, np.nan)
+            solutions.extend([nan_fill] * (n_steps - step))
+            break
+        solutions.append(u.copy())
+
+    return solutions
+
+
 def build_gradient_matrix(N: int, dx: float) -> np.ndarray:
     """Full NxN Jacobian matrix for central-difference gradient.
 

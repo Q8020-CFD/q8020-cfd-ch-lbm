@@ -292,6 +292,43 @@ class ColeHopfIntegrator(_DelegatingIntegrator):
         )
 
 
+class QLBMIntegrator(_DelegatingIntegrator):
+    """Classical D1Q3 LBM (multi-step, owns its loop)."""
+
+    def _run_all(self, state, grid, config, dt):
+        from burgers_qlbm import run_qlbm_simulation
+
+        u0 = state.to_dense()
+        source_fn = None
+        if hasattr(config, "_source_fn"):
+            source_fn = config._source_fn
+        return run_qlbm_simulation(
+            u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
+            source_fn=source_fn,
+        )
+
+
+class QLBMCircuitIntegrator(_DelegatingIntegrator):
+    """QLBM circuit (multi-step, owns its loop)."""
+
+    def __init__(self, backend: Any = None) -> None:
+        self.backend = backend
+
+    def _run_all(self, state, grid, config, dt):
+        from burgers_qlbm_circuit import run_qlbm_circuit_simulation
+
+        u0 = state.to_dense()
+        source_fn = None
+        if hasattr(config, "_source_fn"):
+            source_fn = config._source_fn
+        return run_qlbm_circuit_simulation(
+            u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
+            source_fn=source_fn,
+            shots=config.shots,
+            backend=self.backend,
+        )
+
+
 class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
     """Cole-Hopf circuit (multi-step, owns its loop)."""
 
@@ -341,7 +378,9 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
 # -----------------------------------------------------------------------
 
 # Methods that delegate their own multi-step loop.
-_DELEGATING_METHODS = {"tebd", "cole_hopf", "cole_hopf_circuit"}
+_DELEGATING_METHODS = {
+    "tebd", "cole_hopf", "cole_hopf_circuit", "qlbm", "qlbm_circuit",
+}
 
 
 def make_integrator(
@@ -381,6 +420,10 @@ def make_integrator(
         return ColeHopfIntegrator()
     if m == "cole_hopf_circuit":
         return ColeHopfCircuitIntegrator()
+    if m == "qlbm":
+        return QLBMIntegrator()
+    if m == "qlbm_circuit":
+        return QLBMCircuitIntegrator(backend)
 
     raise ValueError(f"Unknown method: {m}")
 
