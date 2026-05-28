@@ -81,12 +81,20 @@ METHOD_STYLE = {
         'label': 'Pauli-Trotter (circuit)',
     },
     'cole_hopf': {
-        'color': '#2ca02c', 'ls': '-', 'lw': 2.0,
-        'label': 'Cole-Hopf (MPS)',
+        'color': '#2ca02c', 'ls': '--', 'lw': 1.5,
+        'label': 'Cole-Hopf classical (MPS)',
     },
-    'qlbm': {
-        'color': '#d62728', 'ls': '--', 'lw': 1.8,
-        'label': 'LBM (D1Q3 BGK)',
+    'cole_hopf_circuit': {
+        'color': '#17becf', 'ls': '-', 'lw': 2.0,
+        'label': 'Cole-Hopf circuit (pure-quantum)',
+    },
+    'lbm': {
+        'color': '#d62728', 'ls': '--', 'lw': 1.5,
+        'label': 'LBM classical (D1Q3 BGK)',
+    },
+    'qlbm_circuit': {
+        'color': '#d62728', 'ls': '-', 'lw': 2.0,
+        'label': 'LBM circuit (hybrid, Option A)',
     },
 }
 

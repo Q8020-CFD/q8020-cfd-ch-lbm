@@ -3,7 +3,11 @@
 The `quantum_circuit` method implements Gopalakrishnan Meena et al.
 AIAA-2026 Appendix A.A (Eqs. 16-17): per-step Pauli decomposition of
 the classical Euler RHS, then Trotterized circuit evolution of the
-fitted unitary e^{-iÂδτ}.  The paper's §V.C pipeline (classical Euler
+fitted unitary e^{-iÂδτ}.  This is a HYBRID pathway, not pure quantum:
+every step runs a classical Euler RHS, a classical least-squares fit
+of the Pauli coefficients, and classical norm tracking around the
+unitary application.  The only pure-quantum pathway in this codebase
+is `cole_hopf_circuit`.  The paper's §V.C pipeline (classical Euler
 with `quimb` MPS/MPO spatial operators) is NOT implemented here; we
 use it externally as a reference path.
 
@@ -17,7 +21,11 @@ list and classification):
 - quantum_exact: Pauli decomposition + exact matrix exponential
 - quantum_circuit: Pauli decomposition + Trotterized circuit (Appendix A.A)
 - mps: MPS state-prep circuit + exact Hamiltonian evolution
-- tebd / tebd_circuit / cole_hopf{,_circuit} / qlbm{,_circuit}
+- tebd / tebd_circuit: TEBD classical / quantum
+- cole_hopf / cole_hopf_circuit: Cole-Hopf linearisation, MPS / pure quantum
+- lbm: classical D1Q3 lattice Boltzmann (no quantum content -- no
+  shots, no backend)
+- qlbm_circuit: quantum-circuit D1Q3 (hybrid Option A; shots honoured)
 
 Integrates with q8020 sweeper via argparse CLI and metadata fragment writers.
 """
@@ -38,11 +46,17 @@ import numpy as np
 from q8020_cfd_metautil.args import add_standard_quantum_args
 
 from burgers_classical import (
+    initial_condition_gaussian,
     initial_condition_sine,
     initial_condition_multimode,
     source_term_sine,
     solve_burgers,
     solve_burgers_godunov,
+)
+from burgers_cole_hopf import (
+    analytic_solution_cole_hopf,
+    initial_condition_cole_hopf_exact,
+    validate_cole_hopf_coeffs,
 )
 from burgers_fw import BurgersConfig, run_simulation_fw
 from burgers_postprocess import BurgersPostProcessor
@@ -89,9 +103,36 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--ic", type=str, default="sine", choices=["sine", "multimode"],
-        help="Initial condition (multimode = random-phase Fourier IC, "
-             "NOT Burgers turbulence -- see F11 in implementation plan)",
+        "--ic", type=str, default=None,
+        choices=["sine", "multimode", "gaussian", "cole_hopf_exact"],
+        help=(
+            "Initial condition.  sine = u0=sin(2*pi*x).  multimode = "
+            "random-phase Fourier IC (NOT Burgers turbulence; see F11 "
+            "in implementation plan).  gaussian = localized pulse "
+            "u0=A*exp(-((x-x0)/sigma)^2) (no analytic CH reference; "
+            "uses FTCS/Godunov).  cole_hopf_exact = u0 derived from a "
+            "Neumann cosine sum phi_0(x)=a_0+sum a_n*cos(n*pi*x), "
+            "yielding a closed-form analytic u(x,t) reference under "
+            "unforced Cole-Hopf heat evolution (Dirichlet-on-u BC only). "
+            "Default: cole_hopf_exact when --method is cole_hopf or "
+            "cole_hopf_circuit; sine otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--ic-center", type=float, default=0.5,
+        help="Gaussian IC centre x0 (only used with --ic gaussian).",
+    )
+    parser.add_argument(
+        "--ic-sigma", type=float, default=0.1,
+        help="Gaussian IC width sigma (only used with --ic gaussian).",
+    )
+    parser.add_argument(
+        "--ic-cole-hopf-coeffs", type=str, default="1.0,0.3",
+        help=(
+            "Comma-separated Cole-Hopf cosine-sum coefficients "
+            "a_0,a_1,a_2,...  Only used when --ic cole_hopf_exact.  Must "
+            "satisfy a_0 > sum(|a_n|) for n>=1 (positivity of phi)."
+        ),
     )
     parser.add_argument(
         "--ic-modes", type=int, default=6,
@@ -115,6 +156,26 @@ if __name__ == "__main__":
         help="Classical reference solver for error computation",
     )
     parser.add_argument(
+        "--no-classical-reference", dest="classical_reference",
+        action="store_false", default=True,
+        help=(
+            "Skip the classical reference run entirely (no FTCS/Godunov "
+            "solve, no error-vs-classical metrics, no speedup ratio).  "
+            "Default: classical reference is run."
+        ),
+    )
+    parser.add_argument(
+        "--no-analytic-reference", dest="analytic_reference",
+        action="store_false", default=True,
+        help=(
+            "When --ic cole_hopf_exact, by default the closed-form "
+            "analytic solution u(x,t) is used as the classical reference "
+            "(replacing FTCS/Godunov, which is itself approximate).  Pass "
+            "this flag to fall back to the FTCS/Godunov reference even "
+            "with the analytic IC.  No effect for other --ic choices."
+        ),
+    )
+    parser.add_argument(
         "--source", type=str, default="sine", choices=["sine", "none"],
         help="Source term",
     )
@@ -132,9 +193,15 @@ if __name__ == "__main__":
         choices=[
             "shift", "quantum_exact", "quantum_circuit", "mps",
             "tebd", "tebd_circuit", "cole_hopf",
-            "cole_hopf_circuit", "qlbm", "qlbm_circuit",
+            "cole_hopf_circuit", "lbm", "qlbm_circuit",
         ],
-        help="Evolution method",
+        help=(
+            "Evolution method.  Classical: shift (FTCS), tebd, "
+            "cole_hopf, lbm (D1Q3 -- ignores --shots).  Hybrid: "
+            "quantum_exact, quantum_circuit, mps, qlbm_circuit.  "
+            "Pure-quantum: cole_hopf_circuit.  See OVERVIEW §2 for "
+            "the full classification."
+        ),
     )
     parser.add_argument(
         "--propagator", type=str, default="qft-diagonal",
@@ -217,6 +284,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Resolve method-dependent IC default.  Cole-Hopf methods default to
+    # the analytic-IC family so the closed-form u(x,t) reference is
+    # automatic; everything else defaults to sine.
+    if args.ic is None:
+        args.ic = (
+            "cole_hopf_exact"
+            if args.method in ("cole_hopf", "cole_hopf_circuit")
+            else "sine"
+        )
+
     # Grid setup
     q = args.q
     N = 2**q
@@ -241,13 +318,54 @@ if __name__ == "__main__":
                     f"for --ic {args.ic} (only applies to --ic multimode)",
                     file=sys.stderr, flush=True,
                 )
+    if args.ic != "gaussian":
+        _g_defaults = {"ic_center": 0.5, "ic_sigma": 0.1}
+        for _k, _v in _g_defaults.items():
+            if getattr(args, _k) != _v:
+                print(
+                    f"[burgers] WARNING: --{_k.replace('_', '-')} is ignored "
+                    f"for --ic {args.ic} (only applies to --ic gaussian)",
+                    file=sys.stderr, flush=True,
+                )
 
+    ch_coeffs: np.ndarray | None = None
     if args.ic == "sine":
         u0 = initial_condition_sine(x)
     elif args.ic == "multimode":
         u0 = initial_condition_multimode(
             x, n_modes=args.ic_modes, seed=args.ic_seed, alpha=args.ic_alpha,
         )
+    elif args.ic == "gaussian":
+        # Build at unit amplitude; the existing --ic-amplitude post-
+        # multiplier below scales it (matches sine / multimode flow).
+        u0 = initial_condition_gaussian(
+            x, amplitude=1.0, center=args.ic_center, sigma=args.ic_sigma,
+        )
+    elif args.ic == "cole_hopf_exact":
+        if args.bc != "dirichlet":
+            raise ValueError(
+                "--ic cole_hopf_exact requires --bc dirichlet "
+                "(the cosine basis pairs with Neumann-on-phi, which "
+                "maps to Dirichlet-on-u under Cole-Hopf)."
+            )
+        if args.source != "none":
+            raise ValueError(
+                "--ic cole_hopf_exact requires --source none (forced "
+                "evolution couples the cosine modes and breaks the "
+                "closed-form analytic reference)."
+            )
+        try:
+            ch_coeffs = np.array(
+                [float(c) for c in args.ic_cole_hopf_coeffs.split(",")],
+                dtype=float,
+            )
+        except ValueError as e:
+            raise ValueError(
+                f"--ic-cole-hopf-coeffs must be a comma-separated list "
+                f"of floats; got {args.ic_cole_hopf_coeffs!r}"
+            ) from e
+        validate_cole_hopf_coeffs(ch_coeffs)
+        u0 = initial_condition_cole_hopf_exact(x, ch_coeffs, nu, L_box=1.0)
     else:
         raise ValueError(f"Unknown IC: {args.ic}")
     if args.ic_amplitude != 1.0:
@@ -274,23 +392,59 @@ if __name__ == "__main__":
         file=sys.stderr, flush=True,
     )
 
-    # Classical baseline
-    bl = args.classical_baseline
-    print(
-        f"[burgers] running classical {bl.upper()} baseline ...",
-        file=sys.stderr, flush=True,
-    )
-    t0 = time.time()
-    if bl == "godunov":
-        sols_classical = solve_burgers_godunov(
-            u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
+    # Reference trajectory.  Three paths:
+    #   1. --no-classical-reference: skip altogether.
+    #   2. --ic cole_hopf_exact AND analytic_reference: closed-form
+    #      u(x, t) from the Cole-Hopf analytic family (free, exact).
+    #   3. Otherwise: classical FTCS/Godunov solve.
+    if not args.classical_reference:
+        sols_classical = None
+        t_classical = None
+        print(
+            "[burgers] reference trajectory skipped "
+            "(--no-classical-reference)",
+            file=sys.stderr, flush=True,
+        )
+    elif (
+        args.ic == "cole_hopf_exact"
+        and args.analytic_reference
+        and ch_coeffs is not None
+    ):
+        print(
+            f"[burgers] building analytic Cole-Hopf reference "
+            f"(coeffs={ch_coeffs.tolist()}) ...",
+            file=sys.stderr, flush=True,
+        )
+        t0 = time.time()
+        sols_classical = [
+            analytic_solution_cole_hopf(x, k * dt, ch_coeffs, nu, L_box=1.0)
+            for k in range(n_steps + 1)
+        ]
+        t_classical = time.time() - t0
+        print(
+            f"[burgers] analytic reference done {t_classical:.4f}s",
+            file=sys.stderr, flush=True,
         )
     else:
-        sols_classical = solve_burgers(
-            u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
+        bl = args.classical_baseline
+        print(
+            f"[burgers] running classical {bl.upper()} baseline ...",
+            file=sys.stderr, flush=True,
         )
-    t_classical = time.time() - t0
-    print(f"[burgers] classical done {t_classical:.2f}s", file=sys.stderr, flush=True)
+        t0 = time.time()
+        if bl == "godunov":
+            sols_classical = solve_burgers_godunov(
+                u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
+            )
+        else:
+            sols_classical = solve_burgers(
+                u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
+            )
+        t_classical = time.time() - t0
+        print(
+            f"[burgers] classical done {t_classical:.2f}s",
+            file=sys.stderr, flush=True,
+        )
 
     # Build solverfw config and grid
     grid = Grid1D.from_qubits(q, bc=args.bc)
@@ -299,6 +453,17 @@ if __name__ == "__main__":
         dt=dt, n_steps=n_steps, bc=args.bc,
         method=args.method,
         ic=args.ic, source=args.source,
+        ic_modes=args.ic_modes,
+        ic_seed=args.ic_seed,
+        ic_alpha=args.ic_alpha,
+        ic_center=args.ic_center,
+        ic_sigma=args.ic_sigma,
+        ic_cole_hopf_coeffs=(
+            args.ic_cole_hopf_coeffs if args.ic == "cole_hopf_exact"
+            else None
+        ),
+        classical_reference=args.classical_reference,
+        analytic_reference=args.analytic_reference,
         trotter_order=args.trotter_order,
         trotter_reps=args.trotter_reps,
         bond_dim=args.bond_dim,
@@ -340,20 +505,25 @@ if __name__ == "__main__":
     else:
         save_steps = [0, n_steps]
 
-    errors = {}
-    for step in save_steps:
-        u_m = sols_method[step]
-        if not np.all(np.isfinite(u_m)):
-            continue
-        errors[step] = compute_error(u_m, sols_classical[step])
+    if sols_classical is not None:
+        errors = {}
+        for step in save_steps:
+            u_m = sols_method[step]
+            if not np.all(np.isfinite(u_m)):
+                continue
+            errors[step] = compute_error(u_m, sols_classical[step])
 
-    final_error = errors.get(n_steps, float("nan"))
-    max_error = max(errors.values()) if errors else float("nan")
+        final_error = errors.get(n_steps, float("nan"))
+        max_error = max(errors.values()) if errors else float("nan")
 
-    print(
-        f"[burgers] final_error={final_error:.4e} max_error={max_error:.4e}",
-        file=sys.stderr, flush=True,
-    )
+        print(
+            f"[burgers] final_error={final_error:.4e} "
+            f"max_error={max_error:.4e}",
+            file=sys.stderr, flush=True,
+        )
+    else:
+        final_error = float("nan")
+        max_error = float("nan")
 
     # *******************************************************************************
     # Write metadata fragments via PostProcessor

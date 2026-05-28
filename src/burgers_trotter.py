@@ -3,7 +3,11 @@
 The `quantum_circuit_step` here is the per-step driver for Gopalakrishnan
 Meena et al. AIAA-2026 Appendix A.A (Eqs. 16-17): fit a Hermitian Pauli
 operator Â per timestep so that e^{-iÂδτ}|u⟩ reproduces the classical
-Euler update, then evolve via a Suzuki-Trotter circuit.
+Euler update, then evolve via a Suzuki-Trotter circuit.  This is a
+HYBRID pathway, not pure quantum: the Hamiltonian Â is fit per step to
+a classical Euler trajectory, and classical Euler RHS, lstsq Pauli-coef
+solve, norm tracking, and (for `bc='dirichlet'`) boundary projection
+all run alongside the circuit each step.
 
 NOTE: the paper's §V.C (classical Euler with `quimb` MPS/MPO spatial
 operators) is NOT implemented in this module.  The classical reference

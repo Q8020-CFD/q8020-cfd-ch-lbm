@@ -1,0 +1,100 @@
+# Gaussian-IC method-comparison sweep
+#
+# Run:  q8020-sweep q8020-mps-burgers/input/burgers_gaussian_compare.toml
+#
+# Compares the QLBM circuit (Option A, hybrid by construction) against
+# the only pure-quantum pathway (cole_hopf_circuit, LCU propagator), with
+# classical references (shift FTCS, classical D1Q3 LBM) overlaid for
+# context.  The postproc step (plot_method_compare.py) recomputes a
+# Godunov reference on the fly and produces a 2-panel animated GIF:
+#   top    — u(x, t) for all methods + Godunov reference
+#   bottom — relative L2 error vs Godunov for each method, log scale
+#
+# Why this case:
+#   - Gaussian IC: localized smooth pulse, no analytic CH closed-form
+#     (the ∫u is an erf), so the comparison is anchored to Godunov,
+#     not the cole_hopf_exact analytic family.
+#   - Periodic BC: gaussian sits in the middle, exp(-25) ≈ 0 at the
+#     boundary, so wrap-around is benign for all four methods.
+#   - --ic-amplitude 0.4: keeps |u| within the LBM D1Q3 stability
+#     window; high enough to develop a visible nonlinear steepening.
+#   - q=5 (N=32): modest size — Gaussian peak spans ~6 cells at
+#     sigma=0.1, enough for a recognisable visual.  Statevector mode
+#     keeps QLBM+CH circuits cheap.
+#   - nu=1e-2: well-behaved viscosity, well inside the regime where
+#     cole_hopf_circuit shots+post-selection is healthy (the peaked-φ
+#     pathology lives at nu < 1e-3, FUTURE-WORK #10).
+#   - shock_pct=100: standard one-shock-time horizon.
+#   - save-every=1: every step → smooth animation (~32 frames).
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--q" = 5
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--bc" = "periodic"
+"--ic" = "gaussian"
+"--ic-amplitude" = 0.4
+"--ic-center" = 0.5
+"--ic-sigma" = 0.1
+"--source" = "none"
+"--shots" = 10000
+"--save-every" = 1
+
+# ── Classical references ─────────────────────────────────────────────
+# Both run with the same globals; results overlay onto the animation
+# alongside the Godunov reference that the postproc recomputes.
+
+[gauss_shift_q5]
+"--method" = "shift"
+
+[gauss_lbm_q5]
+"--method" = "lbm"
+
+# ── Quantum-circuit methods (the headline comparison) ────────────────
+# qlbm_circuit:   Option A, hybrid (classical f_post shadow → Householder
+#                 dilation → unitary playback).  Statevector mode here;
+#                 swap --shots > 0 to exercise the new shots path.
+# cole_hopf_circuit (lcu): pure-quantum Pathway 2.  LCU propagator picked
+#                 for periodic-BC scaling headroom; qft-diagonal would also
+#                 work at q=5 with similar accuracy.
+
+[gauss_qlbm_circuit_q5]
+"--method" = "qlbm_circuit"
+
+[gauss_cole_hopf_circuit_q5]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+# Shots > 0 with save-every=1 in single-evolution mode rebuilds an
+# independent transpiled circuit per snapshot, with step n carrying n
+# inlined LCU layers -- the full batch then sits in transpiler memory
+# and OOMs around step ~36 on a typical workstation.  Chunked mode
+# emits one short circuit per chunk_size steps, decoding/re-encoding
+# amplitudes (via MPS prep) between chunks.  See OVERVIEW §4.3.7 and
+# SPEC-chunked-evolution.md.
+#
+# Chunked-mode constraints:
+#   1. n_steps must be divisible by chunk_size.  For this case
+#      (gaussian IC, q=5, cfl=0.1, shock_pct=100.0) n_steps=102, so
+#      chunk_size must divide 102 (1, 2, 3, 6, 17, 34, 51, 102).
+#   2. save_every must be a multiple of chunk_size (snapshots can
+#      only land on chunk boundaries).
+# chunk_size=6, save_every=6 → 17 chunks, 17 snapshots, ~2 s at 8 fps.
+# The other methods keep save_every=1 (102 frames); plot_method_compare
+# intersects step keys across methods, so the animation ends up at 17
+# frames overall -- the cole_hopf_circuit sampling rate is the limit.
+"--evolution-mode" = "chunked"
+"--chunk-size" = 6
+"--save-every" = 6
+
+# ── Postproc ─────────────────────────────────────────────────────────
+# plot_method_compare.py harvests all four cases above plus computes a
+# Godunov reference from the IC at runtime.  Output: method_compare.gif
+# in the sweep run dir.
+
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]

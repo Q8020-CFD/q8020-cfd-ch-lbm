@@ -22,7 +22,7 @@ from qiskit.circuit.library import UnitaryGate
 from qiskit.quantum_info import Statevector
 from scipy.linalg import block_diag
 
-from burgers_qlbm import (
+from burgers_lbm import (
     W,
     collide_bgk,
     density,
@@ -207,9 +207,23 @@ def run_qlbm_circuit_simulation(
     bc: str = "periodic",
     source_fn: Callable | None = None,
     shots: int = 0,
-    backend: Any = None,  # noqa: ARG001 (deferred to F11-13)
+    backend: Any = None,
+    sign_recovery: str = "none",
 ) -> tuple[list[np.ndarray], list[dict]]:
     """Run QLBM circuit simulation (statevector or shots).
+
+    shots=0:   statevector path -- exact amplitudes via Aer/Statevector.
+    shots>0:   real circuit + measurement on ``backend``, then magnitude
+               reconstruction (sqrt(counts/S)) and sign recovery.
+
+    sign_recovery (shots>0 only):
+      "none"             -- non-negative magnitudes only; correct when
+                            f stays >= 0 (typical smooth-flow regime).
+      "classical_oracle" -- copy signs from a parallel classical
+                            collide_bgk + stream step; diagnostic-grade
+                            (run is hybrid in the recovery branch).
+      "hadamard_test"    -- NotImplementedError (deferred to
+                            FUTURE-WORK #26: per-bin Hadamard test).
 
     Returns all steps (solutions[i] = u at step i, length n_steps+1).
     """
@@ -241,6 +255,8 @@ def run_qlbm_circuit_simulation(
 
     for step in range(1, n_steps_lbm + 1):
         t0 = time.time()
+        leakage: float | None = None
+        neg_mass: float | None = None
 
         if shots == 0:
             # Statevector path: build circuit, simulate
@@ -270,10 +286,89 @@ def run_qlbm_circuit_simulation(
                 f[0, -1] = f[2, -1]  # right wall
 
         else:
-            # Shots path: classical fallback (F11-13, deferred)
-            f = collide_bgk(f, tau)
-            f = stream(f, bc=bc)
-            cumulative_norm = np.linalg.norm(flatten_distributions(f))
+            # Shots path: real circuit + measurement + reconstruction.
+            # See SPEC-qlbm-shots-and-sign-recovery.md §2-§3.
+            if sign_recovery == "hadamard_test":
+                raise NotImplementedError(
+                    "--sign-recovery hadamard_test for qlbm_circuit is "
+                    "deferred to FUTURE-WORK #26.  v1 supports "
+                    "{none, classical_oracle}."
+                )
+
+            vec_in = flatten_distributions(f)
+            norm_in = float(np.linalg.norm(vec_in))
+            if norm_in < 1e-15:
+                # Zero state -- skip the circuit entirely; collision
+                # unitary is ill-defined for a zero input.
+                f = np.zeros_like(f)
+                leakage = 0.0
+            else:
+                qc, contraction = build_qlbm_step_circuit(f, tau, q)
+                cumulative_norm *= contraction
+                psi_in = vec_in / norm_in
+
+                # Pre-collision oracle for classical_oracle sign
+                # recovery (run BEFORE we mutate f).
+                if sign_recovery == "classical_oracle":
+                    f_ref = collide_bgk(f, tau)
+                    f_ref = stream(f_ref, bc=bc)
+                    vec_ref = flatten_distributions(f_ref)
+                    neg_mass = float(
+                        np.sum(np.abs(vec_ref[vec_ref < 0]))
+                        / max(np.sum(np.abs(vec_ref)), 1e-30)
+                    )
+                else:
+                    vec_ref = None
+
+                backend_eff = backend
+                if backend_eff is None:
+                    from qiskit_aer import AerSimulator
+                    backend_eff = AerSimulator()
+
+                from qiskit.compiler import transpile as _transpile
+
+                qc_full = QuantumCircuit(n_qubits, n_qubits)
+                qc_full.initialize(psi_in.tolist(), range(n_qubits))
+                qc_full.compose(qc, inplace=True)
+                qc_full.measure_all()
+                qc_t = _transpile(
+                    qc_full, backend_eff, optimization_level=1,
+                )
+                counts = (
+                    backend_eff.run(qc_t, shots=shots)
+                    .result()
+                    .get_counts()
+                )
+
+                psi_out_mag = np.zeros(dim)
+                for bitstr, cnt in counts.items():
+                    # Qiskit measure_all bitstrings: low-index qubit on
+                    # the right.  int(bitstr, 2) matches Statevector
+                    # indexing used by the statevector branch above.
+                    idx = int(bitstr.replace(" ", ""), 2)
+                    if idx < dim:
+                        psi_out_mag[idx] = np.sqrt(cnt / shots)
+
+                # Leakage: probability mass landing in the |11>
+                # velocity block (indices 3N..4N-1).  Structurally zero
+                # on noise-free sim; nonzero flags noise / transpilation
+                # error.
+                unused_block = psi_out_mag[3 * N:4 * N]
+                leakage = float(np.sum(unused_block ** 2))
+
+                if sign_recovery == "classical_oracle":
+                    signs = np.sign(vec_ref)
+                    signs[signs == 0] = 1.0
+                    psi_out = signs * psi_out_mag
+                else:
+                    psi_out = psi_out_mag
+
+                f_out_flat = psi_out * cumulative_norm
+                f = unflatten_distributions(f_out_flat, N)
+
+                if bc == "dirichlet":
+                    f[2, 0] = f[0, 0]
+                    f[0, -1] = f[2, -1]
 
         # Source term
         if source_fn is not None:
@@ -296,6 +391,10 @@ def run_qlbm_circuit_simulation(
             "step_time_s": elapsed,
             "n_qubits": n_qubits,
         }
+        if shots > 0:
+            step_met["leakage"] = leakage
+            step_met["negative_mass"] = neg_mass
+            step_met["sign_recovery"] = sign_recovery
         metrics.append(step_met)
         lbm_solutions.append(u_cur.copy())
 

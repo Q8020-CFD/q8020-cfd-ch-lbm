@@ -85,6 +85,34 @@ def initial_condition_multimode(
     return u
 
 
+def initial_condition_gaussian(
+    x: np.ndarray,
+    amplitude: float = 1.0,
+    center: float = 0.5,
+    sigma: float = 0.1,
+) -> np.ndarray:
+    """Localized Gaussian pulse: u0(x) = A * exp(-((x - x0) / sigma)^2).
+
+    Useful for shock-formation demos from a single-lobe disturbance.
+    No closed-form Cole-Hopf analytic reference (unlike
+    ``cole_hopf_exact``) -- under Cole-Hopf the integral becomes an
+    erf and phi_0 has no clean heat-equation evolution.  Pairs with
+    FTCS or Godunov as the classical reference.
+
+    Parameters
+    ----------
+    x         : grid coordinates.
+    amplitude : peak velocity.  LBM methods (qlbm*) typically need
+                |u| < ~0.5 for stable D1Q3; --ic-amplitude is the
+                canonical knob.
+    center    : pulse centre x0 in the domain.
+    sigma     : Gaussian width.  Pick small enough that u(boundary)
+                is negligible under --bc dirichlet, else the
+                discontinuity at x=0 / x=L radiates spurious shocks.
+    """
+    return amplitude * np.exp(-((x - center) / sigma) ** 2)
+
+
 def source_term_sine(
     x: np.ndarray, t: float
 ) -> np.ndarray:

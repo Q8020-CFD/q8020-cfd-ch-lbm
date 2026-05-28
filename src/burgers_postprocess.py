@@ -19,8 +19,11 @@ class BurgersPostProcessor(PostProcessor):
 
     Parameters
     ----------
-    classical_solutions : list[np.ndarray]
-        Solution snapshots from the classical baseline solver.
+    classical_solutions : list[np.ndarray] or None
+        Solution snapshots from the classical baseline solver, or None
+        when ``--no-classical-reference`` is used.  When None, error
+        metrics and ``u_final_classical`` are emitted as null/NaN and
+        ``speedup_ratio`` is omitted.
     source_fn : callable or None
         Source function g(x, t) used in the simulation.
     x : np.ndarray
@@ -35,7 +38,7 @@ class BurgersPostProcessor(PostProcessor):
 
     def __init__(
         self,
-        classical_solutions: list[np.ndarray],
+        classical_solutions: list[np.ndarray] | None,
         source_fn=None,
         x: np.ndarray | None = None,
         output_dir: Path | str = ".",
@@ -115,15 +118,16 @@ class BurgersPostProcessor(PostProcessor):
         x = self.x
         save_steps = self.save_steps
 
-        # Compute errors
-        errors = {}
-        for step in save_steps:
-            u_m = solutions[step]
-            if not np.all(np.isfinite(u_m)):
-                continue
-            errors[step] = compute_error(
-                u_m, self.classical_solutions[step],
-            )
+        # Compute errors (only when a classical reference was run)
+        errors: dict[int, float] = {}
+        if self.classical_solutions is not None:
+            for step in save_steps:
+                u_m = solutions[step]
+                if not np.all(np.isfinite(u_m)):
+                    continue
+                errors[step] = compute_error(
+                    u_m, self.classical_solutions[step],
+                )
 
         final_error = errors.get(n_steps, float("nan"))
         max_error = max(errors.values()) if errors else float("nan")
@@ -150,6 +154,23 @@ class BurgersPostProcessor(PostProcessor):
             ic_alpha=(
                 config.ic_alpha if config.ic == "multimode" else None
             ),
+            ic_center=(
+                config.ic_center if config.ic == "gaussian" else None
+            ),
+            ic_sigma=(
+                config.ic_sigma if config.ic == "gaussian" else None
+            ),
+            ic_cole_hopf_coeffs=(
+                config.ic_cole_hopf_coeffs
+                if config.ic == "cole_hopf_exact"
+                else None
+            ),
+            classical_reference=config.classical_reference,
+            analytic_reference=(
+                config.analytic_reference
+                if config.ic == "cole_hopf_exact"
+                else None
+            ),
             source=config.source, method=config.method,
             trotter_order=config.trotter_order,
             trotter_reps=config.trotter_reps,
@@ -170,9 +191,11 @@ class BurgersPostProcessor(PostProcessor):
         # Results fragment
         results_data = {
             "u_initial": u0.tolist(),
-            "u_final_classical": np.array(
-                self.classical_solutions[-1],
-            ).real.tolist(),
+            "u_final_classical": (
+                np.array(self.classical_solutions[-1]).real.tolist()
+                if self.classical_solutions is not None
+                else None
+            ),
             "u_final_method": np.array(
                 solutions[-1],
             ).real.tolist(),
@@ -190,7 +213,11 @@ class BurgersPostProcessor(PostProcessor):
             "max_error_epsilon": max_error,
             "classical_wall_time_s": t_classical,
             "method_wall_time_s": t_method,
-            "speedup_ratio": t_classical / max(t_method, 1e-9),
+            "speedup_ratio": (
+                t_classical / max(t_method, 1e-9)
+                if t_classical is not None
+                else None
+            ),
             "n_pauli_terms": None,
             "shots": config.shots,
             "t1": getattr(config, "t1", None),
@@ -301,6 +328,23 @@ class BurgersPostProcessor(PostProcessor):
             "ic_alpha": (
                 config.ic_alpha
                 if config.ic == "multimode"
+                else None
+            ),
+            "ic_center": (
+                config.ic_center if config.ic == "gaussian" else None
+            ),
+            "ic_sigma": (
+                config.ic_sigma if config.ic == "gaussian" else None
+            ),
+            "ic_cole_hopf_coeffs": (
+                config.ic_cole_hopf_coeffs
+                if config.ic == "cole_hopf_exact"
+                else None
+            ),
+            "classical_reference": config.classical_reference,
+            "analytic_reference": (
+                config.analytic_reference
+                if config.ic == "cole_hopf_exact"
                 else None
             ),
             "method": config.method,

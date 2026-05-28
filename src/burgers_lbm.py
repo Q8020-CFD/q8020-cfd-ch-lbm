@@ -185,7 +185,7 @@ def lbm_step(
 # ── Multi-step simulation ─────────────────────────────────────────────
 
 
-def run_qlbm_simulation(
+def run_lbm_simulation(
     u0: np.ndarray,
     x: np.ndarray,
     nu: float,
@@ -218,13 +218,13 @@ def run_qlbm_simulation(
 
     if tau <= 0.5:
         print(
-            f"[qlbm] WARNING: tau={tau:.4f} <= 0.5 (unstable). "
+            f"[lbm] WARNING: tau={tau:.4f} <= 0.5 (unstable). "
             f"Increase dx or decrease nu.",
             file=sys.stderr, flush=True,
         )
 
     print(
-        f"[qlbm] N={N} tau={tau:.4f} nu={nu:.2e} "
+        f"[lbm] N={N} tau={tau:.4f} nu={nu:.2e} "
         f"dx={dx:.4e} dt_lbm={dt_lbm:.4e} "
         f"n_steps_lbm={n_steps_lbm} (caller: dt={dt:.4e} n={n_steps})",
         file=sys.stderr, flush=True,

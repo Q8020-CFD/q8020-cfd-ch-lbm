@@ -42,7 +42,12 @@ class BurgersConfig(SolverConfig):
     ic_modes: int = 6
     ic_seed: int = 42
     ic_alpha: float = 1.0
+    ic_center: float = 0.5
+    ic_sigma: float = 0.1
+    ic_cole_hopf_coeffs: str | None = None
     source: str = "sine"
+    classical_reference: bool = True
+    analytic_reference: bool = True
 
     # Method-specific params
     trotter_order: int = 1
@@ -292,17 +297,17 @@ class ColeHopfIntegrator(_DelegatingIntegrator):
         )
 
 
-class QLBMIntegrator(_DelegatingIntegrator):
+class LBMIntegrator(_DelegatingIntegrator):
     """Classical D1Q3 LBM (multi-step, owns its loop)."""
 
     def _run_all(self, state, grid, config, dt):
-        from burgers_qlbm import run_qlbm_simulation
+        from burgers_lbm import run_lbm_simulation
 
         u0 = state.to_dense()
         source_fn = None
         if hasattr(config, "_source_fn"):
             source_fn = config._source_fn
-        return run_qlbm_simulation(
+        return run_lbm_simulation(
             u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
             source_fn=source_fn,
         )
@@ -326,6 +331,7 @@ class QLBMCircuitIntegrator(_DelegatingIntegrator):
             source_fn=source_fn,
             shots=config.shots,
             backend=self.backend,
+            sign_recovery=config.sign_recovery,
         )
 
 
@@ -379,7 +385,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
 
 # Methods that delegate their own multi-step loop.
 _DELEGATING_METHODS = {
-    "tebd", "cole_hopf", "cole_hopf_circuit", "qlbm", "qlbm_circuit",
+    "tebd", "cole_hopf", "cole_hopf_circuit", "lbm", "qlbm_circuit",
 }
 
 
@@ -420,8 +426,8 @@ def make_integrator(
         return ColeHopfIntegrator()
     if m == "cole_hopf_circuit":
         return ColeHopfCircuitIntegrator()
-    if m == "qlbm":
-        return QLBMIntegrator()
+    if m == "lbm":
+        return LBMIntegrator()
     if m == "qlbm_circuit":
         return QLBMCircuitIntegrator(backend)
 

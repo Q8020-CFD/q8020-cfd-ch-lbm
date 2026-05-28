@@ -190,6 +190,86 @@ def _should_center(u: np.ndarray, dx: float, nu: float) -> bool:
 
 
 # -------------------------------------------------------------------
+# Closed-form analytic family (FUTURE-WORK #12)
+#
+# When phi(x, t=0) is a finite Neumann cosine sum on [0, L_box],
+#   phi_0(x) = a_0 + sum_{n>=1} a_n * cos(n*pi*x/L_box),
+# each mode evolves independently under the heat equation:
+#   phi(x, t) = a_0 + sum_n a_n * cos(n*pi*x/L_box) * exp(-nu*(n*pi/L_box)^2 * t).
+# The inverse Cole-Hopf transform u = -2*nu * phi_x / phi then gives a
+# closed-form analytic reference for u(x, t).  This is restricted to
+# --bc dirichlet (Neumann-on-phi) and unforced --source none.  Used by
+# burgers_solver.py to replace the FTCS classical reference with an
+# exact one in this narrow but rigorous test family.
+# -------------------------------------------------------------------
+
+
+def validate_cole_hopf_coeffs(coeffs: np.ndarray) -> None:
+    """Reject coefficient lists that would make phi(x, t) <= 0 anywhere.
+
+    Sufficient (not necessary) positivity condition: a_0 > sum(|a_n|)
+    for n>=1.  Since modes only decay over time, satisfying this at
+    t=0 guarantees phi > 0 for all t >= 0.
+    """
+    if coeffs.ndim != 1 or coeffs.size < 1:
+        raise ValueError(
+            "coeffs must be a 1-D array with at least one element (a_0)"
+        )
+    a0 = float(coeffs[0])
+    tail = float(np.sum(np.abs(coeffs[1:])))
+    if a0 <= tail:
+        raise ValueError(
+            f"Cole-Hopf coefficients fail positivity: a_0={a0:.6g} must "
+            f"exceed sum(|a_n|)={tail:.6g} so that phi(x,t) > 0 for all "
+            f"t >= 0."
+        )
+
+
+def _phi_and_phi_x(
+    x: np.ndarray, t: float, coeffs: np.ndarray, nu: float, L_box: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate phi(x, t) and phi_x(x, t) on the grid."""
+    n_modes = coeffs.size - 1
+    phi = np.full_like(x, float(coeffs[0]), dtype=float)
+    phi_x = np.zeros_like(x, dtype=float)
+    for n in range(1, n_modes + 1):
+        a_n = float(coeffs[n])
+        if a_n == 0.0:
+            continue
+        kn = n * np.pi / L_box
+        decay = np.exp(-nu * kn * kn * t)
+        phi = phi + a_n * np.cos(kn * x) * decay
+        phi_x = phi_x - a_n * kn * np.sin(kn * x) * decay
+    return phi, phi_x
+
+
+def initial_condition_cole_hopf_exact(
+    x: np.ndarray, coeffs: np.ndarray, nu: float, L_box: float = 1.0,
+) -> np.ndarray:
+    """u_0(x) from a Neumann cosine sum phi_0(x).
+
+    coeffs[0] = a_0; coeffs[n] = a_n for n >= 1.  Returns
+    u_0(x) = -2*nu * phi_x(x, 0) / phi(x, 0).
+    """
+    validate_cole_hopf_coeffs(coeffs)
+    phi, phi_x = _phi_and_phi_x(x, 0.0, coeffs, nu, L_box)
+    return -2.0 * nu * phi_x / phi
+
+
+def analytic_solution_cole_hopf(
+    x: np.ndarray, t: float, coeffs: np.ndarray, nu: float,
+    L_box: float = 1.0,
+) -> np.ndarray:
+    """u(x, t) under heat-equation evolution of phi_0 (no source).
+
+    Each mode amplitude decays as a_n -> a_n * exp(-nu*(n*pi/L_box)^2 * t).
+    """
+    validate_cole_hopf_coeffs(coeffs)
+    phi, phi_x = _phi_and_phi_x(x, t, coeffs, nu, L_box)
+    return -2.0 * nu * phi_x / phi
+
+
+# -------------------------------------------------------------------
 # Heat-equation Laplacian and propagator
 # -------------------------------------------------------------------
 
@@ -343,7 +423,11 @@ def run_cole_hopf_simulation(
     nu       : kinematic viscosity (must be >= ~1e-3 for float64).
     dt       : time step.
     n_steps  : number of time steps.
-    bc       : "periodic" or "neumann".
+    bc       : u-side BC: "periodic" or "dirichlet" (u=0 walls).
+               "neumann" is accepted as the equivalent phi-side label
+               for the Dirichlet-on-u case.  Internally the heat
+               propagator is built in phi-space, so Dirichlet-on-u is
+               mapped to Neumann-on-phi (OVERVIEW §4.1 BC mapping).
     max_bond : max MPS bond dimension (None = full rank).
     cutoff   : SVD cutoff for MPO/MPS construction.
     snapshot_interval : save u every this many steps (1 = every step).
@@ -356,6 +440,18 @@ def run_cole_hopf_simulation(
     N = len(u0)
     q = int(np.log2(N))
     dx = x[1] - x[0]
+
+    # u-side -> phi-side BC mapping (OVERVIEW §4.1).  Dirichlet on u
+    # (u(0)=u(L)=0) maps to Neumann on phi (dphi/dx=0), which is what
+    # build_heat_propagator_mpo expects.  Mirror the same translation
+    # the circuit path does in burgers_cole_hopf_circuit.py:1911.
+    phi_bc = "neumann" if bc == "dirichlet" else bc
+    if phi_bc not in ("periodic", "neumann"):
+        raise NotImplementedError(
+            f"bc={bc!r} not supported by run_cole_hopf_simulation; "
+            f"u-side supported: 'periodic', 'dirichlet' (or pass "
+            f"'neumann' as the equivalent phi-side label)."
+        )
 
     # --- Setup (once) ---
 
@@ -386,9 +482,9 @@ def run_cole_hopf_simulation(
         )
     phi_mps = state_to_mps(psi0, q, cutoff=cutoff)
 
-    # Build propagator MPO ONCE
+    # Build propagator MPO ONCE (phi-side BC).
     propagator_mpo = build_heat_propagator_mpo(
-        N, dx, dt, nu, bc=bc,
+        N, dx, dt, nu, bc=phi_bc,
         max_bond=max_bond, cutoff=cutoff,
     )
 

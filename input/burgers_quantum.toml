@@ -17,7 +17,7 @@
 [global]
 _output_dir = "~/q8020"
 _inject_outdir = "--outdir"
-_env = "./q8020-mps-burgers/.venv"
+_env = "./.venv"
 _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--noshow" = true
 "--nu" = 1e-4
@@ -1038,11 +1038,11 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
 "--classical-baseline" = "godunov"
 "--save-every" = 1
 
-[method_compare_q5_qlbm]
+[method_compare_q5_lbm]
 "--q" = 5
 "--nu" = 1e-2
 "--shock-pct" = 100.0
-"--method" = "qlbm"
+"--method" = "lbm"
 "--bc" = "periodic"
 "--source" = "none"
 "--ic-amplitude" = 0.3
@@ -1084,12 +1084,12 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 "--classical-baseline" = "godunov"
 "--save-every" = 1
 
-[method_compare_v2_qlbm]
+[method_compare_v2_lbm]
 "--q" = 5
 "--nu" = 1e-2
 "--cfl" = 0.1
 "--shock-pct" = 100.0
-"--method" = "qlbm"
+"--method" = "lbm"
 "--bc" = "periodic"
 "--ic" = "sine"
 "--source" = "none"
@@ -1102,29 +1102,29 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 # D1Q3 stencil, BGK collision, periodic streaming.
 # nu=1e-2 keeps tau well above 0.5 (stable regime).
 
-[qlbm_classical_q3]
+[lbm_q3]
 "--q" = 3
 "--nu" = 1e-2
 "--shock-pct" = 100.0
-"--method" = "qlbm"
+"--method" = "lbm"
 "--bc" = "periodic"
 "--source" = "none"
 "--save-every" = 2
 
-[qlbm_classical_q4]
+[lbm_q4]
 "--q" = 4
 "--nu" = 1e-2
 "--shock-pct" = 100.0
-"--method" = "qlbm"
+"--method" = "lbm"
 "--bc" = "periodic"
 "--source" = "none"
 "--save-every" = 4
 
-[qlbm_classical_q5]
+[lbm_q5]
 "--q" = 5
 "--nu" = 1e-2
 "--shock-pct" = 100.0
-"--method" = "qlbm"
+"--method" = "lbm"
 "--bc" = "periodic"
 "--source" = "none"
 "--save-every" = 8
@@ -1161,11 +1161,11 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 "--save-every" = 8
 
 # QLBM Dirichlet (bounce-back BCs)
-[qlbm_classical_q5_dirichlet]
+[lbm_q5_dirichlet]
 "--q" = 5
 "--nu" = 1e-2
 "--shock-pct" = 100.0
-"--method" = "qlbm"
+"--method" = "lbm"
 "--bc" = "dirichlet"
 "--source" = "none"
 "--save-every" = 8
