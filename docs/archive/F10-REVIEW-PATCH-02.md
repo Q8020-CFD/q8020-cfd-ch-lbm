@@ -14,7 +14,7 @@ Parcels are independent; can be dispatched in parallel.
 ## P-G — Wire MPS / Ran 2020 state prep into `cole_hopf_circuit`
 
 **Problem.** Today
-[burgers_cole_hopf_circuit.py:463-464](../burgers_cole_hopf_circuit.py)
+[burgers_cole_hopf_circuit.py:463-464](../../src/burgers_cole_hopf_circuit.py)
 initializes the quantum state with Qiskit's generic
 `QuantumCircuit.initialize(init_sv, range(q + 1))`. This bypasses
 `burgers_mps.py` entirely. Consequences:
@@ -49,21 +49,21 @@ normalization / centering logic — §9 is untouched.
 
 **Thread `--bond-dim` through.**
 
-- [burgers_solver.py:244](../burgers_solver.py) already passes
+- [burgers_solver.py:244](../../src/burgers_solver.py) already passes
   `bond_dim` to `run_simulation`. Extend the `cole_hopf_circuit` branch
-  at [burgers_trotter.py:712-718](../burgers_trotter.py) to accept and
+  at [burgers_trotter.py:712-718](../../src/burgers_trotter.py) to accept and
   forward `bond_dim=bond_dim`.
 - Add `bond_dim: int | None = None` parameter to
   `run_cole_hopf_circuit_simulation` and
   `_run_shots_batch` in
-  [burgers_cole_hopf_circuit.py](../burgers_cole_hopf_circuit.py).
+  [burgers_cole_hopf_circuit.py](../../src/burgers_cole_hopf_circuit.py).
 - Pass `bond_dim` through into `classical_to_mps(...)`.
 - Default `None` preserves the current behaviour (full rank); any finite
   value truncates the MPS.
 
 **Statevector path parity.** The existing statevector driver
 `run_cole_hopf_circuit_sv` at
-[burgers_cole_hopf_circuit.py:418](../burgers_cole_hopf_circuit.py)
+[burgers_cole_hopf_circuit.py:418](../../src/burgers_cole_hopf_circuit.py)
 constructs its own statevector seed directly from `psi0` — it does not
 invoke a prep circuit. For fairness with the shots path, the SV driver
 must optionally run through the same MPS-prep circuit so bond-dim
@@ -120,7 +120,7 @@ _group_postproc = ["python ./q8020-cfd-axequalsb/src/murali_burgers/analysis/plo
 **Problem.** At paper-target ν=1e-4, φ(x) = exp(−∫u/2ν) concentrates
 almost all its probability mass on ~1 grid bin (the location of the
 minimum of ∫u). The shots path at
-[burgers_cole_hopf_circuit.py:504-509](../burgers_cole_hopf_circuit.py)
+[burgers_cole_hopf_circuit.py:504-509](../../src/burgers_cole_hopf_circuit.py)
 reconstructs φ(x_i) = √(counts[x_i]/N_kept) with √-of-counts noise
 scaling. At N_bins − 1 "tail" bins with expected p_i ≪ 1/shots, the
 relative noise explodes. Concretely: test_11_5 had to deviate from the
@@ -178,7 +178,7 @@ Out of scope for a patch. Flag as future work.
 
 **Recommend P-H.1.** The Hadamard-test-per-bin circuit already exists
 conceptually in the F9 sign-recovery machinery (`--sign-recovery
-hadamard_test` flag in [burgers_solver.py:126-130](../burgers_solver.py)),
+hadamard_test` flag in [burgers_solver.py:126-130](../../src/burgers_solver.py)),
 which can be adapted: sign recovery returns ±1 amplitude; here we
 return amplitude only since φ > 0. Reuse the ancilla wiring.
 

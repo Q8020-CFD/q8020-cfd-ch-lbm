@@ -1,256 +1,691 @@
-# OVERVIEW — Burgers solver
+# Quantum Methods for the 1-D Viscous Burgers Equation
+## A technical reference for the `q8020-mps-burgers` solver
 
-This document describes what the `q8020-mps-burgers` solver does,
-the various evolution methods it offers, the encoding and propagator
-options that vary per method, and how the package is layered on top
-of `solverfw` (see
-[SPEC-solverfw.md](../../q8020-cfd-metautil/docs/SPEC-solverfw.md)
-for the framework itself).
+*May 2026 — LLM generated, human edited.*
 
-## 1. What the solver solves
+---
 
-One-dimensional viscous Burgers equation with optional source:
+## Preamble
+
+The `q8020-mps-burgers` codebase grew up ad hoc, and as such probably needs
+a haircut. We wired in many CLI switches to trigger classical and hybrid
+pathways. In the end we are only really interested in the **pure-quantum
+pathways**; the classical and hybrid variants are kept as validation
+references. A front-end TOML driver (see project repo q8020-cfd-metautil) feeds this solver, and its data and metadata are harvested into the q8020 *cases × codes × backends* rollup.
+
+The original goal was a curiosity: would it be possible to derive a quantum
+solution from a published mathematical description — science publications
+make good specifications, mathematics being a good specification language —
+and to validate it against an existing classical solution, with AI tooling
+providing "independent" review, plus human software and SME review.
+
+We are also now interested, again in the *cases × codes × backends*
+modality, in running the same case on more than one code implementing the
+same Burgers equation, e.g. QLBM.
+
+In the solver we do an MPS encoding. There is variation around what
+"nearest neighbor" means for a given encoding, but that is workable. We
+then decompose into Pauli strings — this is 4^q and does not scale well,
+though it offers embarrassing parallelism. We Trotterize, then measure.
+Additional measurements may be required for sign extraction, which we
+implement. We do not concede the phase problem, and we do not require a
+classical solution to be computed simultaneously to steer the quantum
+trajectory, as is so often the case in the literature.
+
+The 4^q cost is a per-iteration burden, and the same scaling appears in
+quantum algorithms across other domains. In CFD the qubit count `q` may
+be large, so a method that scales better is wanted. The Cole–Hopf
+substitution linearizes Burgers into the heat equation, bypasses the 4^q cost, and runs much faster than Pauli–Trotter; LCU can be used for the time-step. This
+pathway is not in the Meena et al. AIAA paper; we added it for
+comparison. We also added 1-D QLBM as a third pathway for cross-method
+comparison on the same case.
+
+---
+
+## 1. Governing equation and discretization
+
+### 1.1 The PDE
+
+The 1-D viscous Burgers equation with optional source:
 
 ```
-∂u/∂t + u·∂_x u = ν · ∂²_x u + g(x, t)
+∂u/∂t + u · ∂_x u = ν · ∂²_x u + g(x, t)                                (1)
 ```
 
-with periodic or homogeneous-Dirichlet (`u=0`) boundary conditions.
-Initial conditions: `sine` (single mode) or `multimode` (random
-sum of low-wavenumber modes). Sources: `sine` (g(x,t) = sin(2πx)·
-cos(2πt), the Murali/Meena AIAA-2026 reference test problem) or
-`none`.
+with boundary conditions `u(0,t) = u(L,t) = 0` (homogeneous Dirichlet) or
+`u(0,t) = u(L,t)` (periodic). The domain is `x ∈ [0, 1]` and the grid is
+`N = 2^q` equispaced points `x_j = j · δx`, `j = 0, …, N−1`, with
+`δx = 1/N`. The integer `q` is both the grid-refinement parameter and the
+qubit count for the quantum methods. Both pathways encode the velocity as
+a quantum state
 
-The grid is N = 2^q points uniform on [0, 1]. `q` controls grid
-resolution and the qubit count for quantum methods.
+```
+|ψ⟩ = Σ_k u_k |k⟩ / ‖u‖                                                  (2)
+```
 
-The CLI is [`burgers_solver.py`](../src/burgers_solver.py); it
-always runs a classical Forward-Time Central-Space (FTCS) reference
-alongside the chosen method and reports L2 error against it.
+on `q` qubits, where `k` indexes grid cells in binary.
 
-Quantum solutions may have pre-processing, but once rolling, do not refer back to the classical solution for steerage. The solver does have additional runtime modes which permit a quantum-classical hybrid for comparison to the quantum-centric solver variants. 
+Initial conditions: `sine` (single mode `u₀(x) = sin(2πx)`) or `multimode`
+(random sum of low-wavenumber modes). Sources: `sine` (Gopalakrishnan
+Meena AIAA-2026 reference test problem, `g(x,t) = sin(2πx)·cos(2πt)`)
+or `none`.
 
+The CLI is [`burgers_solver.py`](../src/burgers_solver.py); it always
+runs a classical Forward-Time Central-Space (FTCS) reference alongside
+the chosen method and reports the L² error against it. Quantum
+trajectories may have pre-processing, but once rolling do not refer back
+to the classical solution for steerage. (The solver does support
+quantum-classical hybrid modes for diagnostic comparison.)
 
-## 2. The method variations
+### 1.2 Spatial discretization
 
-`--method` selects the evolution scheme. Methods divide into two
-families: those that march `u` directly, and those that linearize
-via Cole-Hopf and march `φ = exp(−U/(2ν))` instead.
+Spatial derivatives use the shift-operator central-difference stencil
+(Meena et al. AIAA-2026 Eq. 9):
 
-**Legend:**
-🔧 classical — no quantum objects
-🔬 quantum with classical mirror — operator rebuilt from classical state each step
-🔭 near-pure quantum — classical mirror confined to operator construction; evolution is fully quantum
-⚛ pure quantum — no classical mirror in the time loop
+```
+∇u   ≈ −(S⁺ − S⁻) u / (2·δx)                                            (3)
+∇²u  ≈  (S⁺ + S⁻ − 2I) u / δx²                                          (4)
+```
 
-### Direct-`u` family (six)
+where `S⁺` and `S⁻` are the cyclic forward and backward shift matrices:
+`(S⁺u)_j = u_{j−1}`, `(S⁻u)_j = u_{j+1}`. For Dirichlet BC the shift
+wrap-around is suppressed: `S⁺[0, N−1] = S⁻[N−1, 0] = 0`, and the RHS at
+boundary indices is forced to zero (`∂u/∂t = 0` at `x = 0, L`).
 
-- 🔧 **`shift`** *(classical)* —
-  Explicit forward-Euler with central-difference shift-operator FD
-  on `u`. Pure classical baseline; no quantum objects at all.
-  O(N) per step where N = 2^q.
+---
 
-- 🔬 **`quantum_exact`** *(quantum, statevector)* —
-  At each step, freeze the nonlinear Burgers RHS at the current
-  state, fit a Hermitian operator `Â` to it via Pauli decomposition,
-  then apply `expm(-i·Â·dt)` (scipy dense matrix exponential). No
-  Trotter error, but requires a classical mirror (the frozen RHS)
-  every step. Diagnostic / upper-bound reference for the circuit
-  methods. The Pauli decomposition builds a (4^q × N) matrix and
-  solves a least-squares system — O(4^q · N) per step, which is the
-  bottleneck. `expm` adds O(N^3). OOMs at q >= 6.
+## 2. Method families and classification
 
-- 🔬 **`quantum_circuit`** *(quantum, circuit)* —
-  Same per-step Pauli Hamiltonian as `quantum_exact`, but evolved
-  via a Suzuki-Trotter circuit instead of exact `expm`. Trotter
-  order (1 or 2) and repetition count are configurable. Supports
-  statevector and shots modes, with optional sign recovery. The
-  Pauli decomposition is still O(4^q · N) per step; the circuit
-  construction and simulation replace the O(N^3) `expm`.
+`--method` selects the evolution scheme. Methods divide into three
+families:
 
-- 🔬 **`mps`** *(quantum/tensor)* —
-  Encode the current `u` into an MPS circuit using the Ran 2020
-  state-prep decomposition (with optional bond-dim truncation),
-  simulate the circuit to obtain the quantum state, then apply the
-  exact dense Hamiltonian evolution. Useful for studying MPS
-  compression fidelity independently of time-integration error.
-  Uses the same O(4^q · N) Pauli Hamiltonian as `quantum_exact`.
+- **Direct-u**: march `u` directly (six methods).
+- **Cole–Hopf**: linearize via `u = −2ν ∂_x ln φ` and march `φ` (two methods).
+- **QLBM (kinetic)**: march mesoscopic distributions `f_i` and recover `u`
+  by moments (two methods).
 
-- 🔬 **`tebd`** *(classical/tensor)* —
-  Build the dense Hermitian evolution generator directly from shift
-  operators — O(N^2), bypassing the O(4^q) Pauli decomposition.
-  Compute `expm` once per step — O(N^3). Convert to an MPO via
-  `quimb.MatrixProductOperator.from_dense`, and apply the MPO to
-  the MPS state with bond-dim truncation — O(N · chi^3) per step.
-  Multi-step delegating path (owns its own loop). Scales to q=12
-  (N=4096); the bottleneck is the dense `expm`, not the MPO ops.
+Each method is classified by how much classical machinery it carries:
 
-- 🔭 **`tebd_circuit`** *(quantum, circuit)* —
-  TEBD-style quantum circuit: MPS state-prep followed by a W-II
-  (Zaletel) gate layer that encodes one evolution step. Uses the
-  same O(N^2) dense Hamiltonian as `tebd` (no Pauli decomposition).
-  Per-step path through the framework loop. Not pure-quantum: the
-  Hamiltonian is rebuilt from the current `u` each step (classical
-  mirror). However, the *evolution itself* — state-prep, gate
-  layer, measurement — is entirely quantum. The classical mirror
-  is confined to operator construction, not state readout or
-  steerage.
+| Class | Symbol | Meaning |
+|---|---|---|
+| Classical | C | No quantum objects |
+| Hybrid | H | Operator rebuilt from classical state each step (classical mirror in the time loop) |
+| Near-pure quantum | NQ | Classical mirror confined to operator construction; evolution itself is fully quantum |
+| Pure quantum | PQ | No classical mirror in the time loop |
 
-### Cole-Hopf family (two methods, three propagators)
+Method roster:
 
-- 🔧 **`cole_hopf`** *(classical/tensor)* —
-  Apply the Cole-Hopf transform `u → phi = exp(-U/(2*nu))`,
-  converting nonlinear Burgers into the linear heat equation. Build
-  the heat propagator `exp(nu*L*dt)` once as a dense matrix —
-  O(N^3) one-time cost — convert to MPO, and reuse it every step
-  (the propagator is state-independent). Per-step cost is
-  O(N · chi^3) for the MPO-on-MPS apply. Invert back to `u` via
-  log-domain finite differences. Multi-step delegating path.
+| `--method` | Family | Class | Notes |
+|---|---|---|---|
+| `shift` | Direct-u | C | FTCS reference, baseline |
+| `quantum_exact` | Direct-u | H | Diagnostic upper bound (no Trotter error) |
+| `quantum_circuit` | Direct-u | H | **Pure-quantum Pathway 1 (Meena AIAA-2026)** |
+| `mps` | Direct-u | H | MPS state-prep + dense evolution |
+| `tebd` | Direct-u | C | Tensor-network classical |
+| `tebd_circuit` | Direct-u | NQ | W-II quantum circuit |
+| `cole_hopf` | Cole–Hopf | C | Classical reference for the CH pathway |
+| `cole_hopf_circuit` | Cole–Hopf | PQ | **Pure-quantum Pathway 2 (this work)** |
+| `qlbm` | QLBM | C | Classical D1Q3 BGK |
+| `qlbm_circuit` | QLBM | H | Quantum-circuit D1Q3 (statevector real; shots = classical fallback) |
 
-- ⚛ **`cole_hopf_circuit`** *(quantum, circuit)* —
-  Same Cole-Hopf linearization, but the heat equation is marched as
-  a quantum circuit. Initial `φ` amplitudes are loaded onto qubits
-  via the Ran 2020 MPS-to-circuit state-prep pipeline (the MPS is
-  used only for encoding, not for evolution). In chunked mode the
-  MPS prep is repeated at each chunk boundary (decode counts,
-  re-encode). Two propagator choices: `qft-diagonal` (QFT ->
-  conditional-Ry on Fourier eigenvalues -> inverse QFT; O(q^2)
-  gates; periodic BC only) or `dense-block` (eigendecomposition
-  encoded as a block of a unitary with one ancilla + post-selection;
-  O(N^3) one-time build; supports any BC and source forcing) or
-  `lcu` (Taylor-expansion LCU block-encoding of the heat propagator
-  using S+/S- shift-operator primitives; periodic BC; gate count
-  O(M*q) per step where M = taylor_order; see
-  [SPEC-F3-LCU-method.md](SPEC-F3-LCU-method.md)).
-  Pure-quantum inside the time loop. Multi-step delegating path.
-  Supports statevector, shots, and chunked evolution modes.
+The two **pure-quantum pathways** (Pathway 1 = `quantum_circuit`,
+Pathway 2 = `cole_hopf_circuit`) are the primary scientific objects of
+this codebase. They are detailed mathematically in §§3.3 and 4.3.
+`qlbm_circuit` is the cross-comparison code from a different algorithmic
+family. All other methods exist as references and diagnostics.
 
-The classical FTCS baseline that runs alongside every method is
-implemented in [`burgers_classical.py`](../src/burgers_classical.py)
-(`solve_burgers`) — that is the reference, *not* one of the switchable
-methods.
+---
 
-## 3. Per-method options
+## 3. Direct-u family
 
-Most CLI flags only apply to a subset of methods. You might see some "not supported" errors for odd combinations.
+### 3.1 `shift` (classical)
 
-### Encoding (`--encoding {binary,gray}`)
+Explicit forward-Euler with central-difference shift-operator FD on `u`.
+Pure classical baseline; no quantum objects. `O(N)` per step.
 
-Used by `cole_hopf_circuit`. `binary` is index-aligned (default);
-`gray` uses reflected Gray code permutation `π(i) = i ^ (i >> 1)`
-on the Laplacian/propagator matrix. The encoding choice affects
-which two-qubit gates are nearest-neighbour after transpilation.
+### 3.2 `quantum_exact` (hybrid, statevector)
 
-### Propagator (`--propagator {qft-diagonal,dense-block,lcu}`)
+At each step, freeze the nonlinear Burgers RHS at the current state, fit
+a Hermitian operator `Â` to it via Pauli decomposition, then apply
+`expm(−i·Â·δt)` (SciPy dense matrix exponential). No Trotter error, but a
+classical mirror (the frozen RHS) is required every step. Diagnostic /
+upper-bound reference for the circuit methods. The Pauli decomposition
+builds a `4^q × N` matrix and solves a least-squares system —
+`O(4^q · N)` per step, which is the bottleneck. The `expm` adds `O(N³)`.
+Out-of-memory at `q ≥ 6`.
+
+### 3.3 `quantum_circuit` — Pure-Quantum Pathway 1 (Meena AIAA-2026)
+
+Same per-step Pauli Hamiltonian as `quantum_exact`, but evolved via a
+Suzuki–Trotter circuit instead of exact `expm`. This pathway directly
+follows Gopalakrishnan Meena et al. AIAA-2026 **Appendix A.A** (Eqs. 16–17),
+which the paper itself labels as a proposed/future-work alternative to
+their §V.C implementation. The paper's §V.C MPS/MPO classical-Euler
+pipeline (velocity stored as MPS, spatial operators applied as `quimb`
+MPOs, then `.to_dense()` and Euler-stepped classically) is **not**
+implemented in this method — we use it externally as a cross-check
+reference. The shift-operator FD used here for the classical reference
+RHS matches the *form* of §V.C Eq. 15 but not its MPS/MPO apparatus.
+
+Supports periodic and Dirichlet boundary conditions; statevector and
+shots modes; optional sign recovery.
+
+#### 3.3.1 Classical target state (paper Eq. 15–16)
+
+The quantum Hamiltonian is fitted per timestep to reproduce the
+forward-Euler update. This is the defining design decision of the Meena
+approach: the quantum pipeline (state prep → Hamiltonian simulation →
+measurement) is validated against a known classical trajectory, not used
+as an independent solver.
+
+At time `t_n`:
+
+1. Compute the classical RHS: `Δ = ν∇²u − u·∇u + g` (Euler step from
+   paper Eq. 15).
+2. Predict the next physical state: `u_{n+1} = u_n + δτ · Δ`.
+3. Normalize both states: `|u⟩ = u/‖u‖`, `|u_next⟩ = u_{n+1}/‖u_{n+1}‖`.
+4. Form the target rate of change: `δ₀ = (|u_next⟩ − |u⟩) / δτ`.
+
+The norm `‖u_{n+1}‖` is tracked classically; it is not recovered from the
+quantum circuit. The circuit evolves only the normalized direction.
+
+#### 3.3.2 Pauli decomposition (paper Appendix A.A, Eq. 16)
+
+The Hermitian operator `Â = Σ_i c_i P̂_i` is determined by solving a
+linear system that matches `exp(−i·δτ·Â)|u⟩ ≈ |u⟩ + δτ · δ₀` to first
+order. There are `4^q` Pauli string labels
+`P̂_i ∈ {I, X, Y, Z}^⊗q`. The system is
+
+```
+b_i  = −2 Im(⟨u|P̂_i|δ₀⟩)                                                (5)
+S_ij = ⟨P̂_i u | P̂_j u⟩                                                  (6)
+2 Re(S) c = b                                                            (7)
+```
+
+This is an overdetermined system (`4^q` unknowns, rank ≤ `N²`). It is
+solved via NumPy least-squares (`lstsq`). Near-zero coefficients
+(`|c_i| < 10⁻¹⁵`) are filtered for circuit efficiency. The resulting `Â`
+is verified Hermitian to `10⁻¹²` tolerance. Cost: building the full
+`4^q × N` overlap matrix `S` each timestep is `O(4^q · N) = O(8^q)` per
+step — the dominant scaling bottleneck.
+
+#### 3.3.3 Trotterized evolution circuit (paper Eq. 17)
+
+Given `Â = Σ_i c_i P̂_i`, the evolution operator `exp(−i·δτ·Â)` is
+approximated by a Suzuki–Trotter product:
+
+```
+exp(−i·δτ·Â) ≈ ∏_i exp(−i·δτ·c_i · P̂_i)                                 (8)
+```
+
+Each factor `exp(−i·δτ·c_i·P̂_i)` is a Pauli rotation gate, synthesized
+by Qiskit's `PauliEvolutionGate` with `SuzukiTrotter(order=k, reps=r)`.
+Order `k=1` gives Lie–Trotter (`O(δτ²)` error per step); `k=2` gives the
+symmetric Strang splitting (`O(δτ³)` error per step). The full per-step
+circuit is:
+
+1. State preparation: initialize `q` qubits to `|u⟩ = u/‖u‖`.
+2. Apply the Trotter circuit `exp(−i·δτ·Â)` to the `q`-qubit register.
+3. Measurement (shots mode) or statevector extraction.
+4. Rescale: `u_{n+1} = ‖u_{n+1}‖ · |u_evolved⟩` (classical norm).
+
+#### 3.3.4 Sign recovery in shots mode
+
+Measurement yields probabilities `p_k = |u_k|²/‖u‖²`, which lose the sign
+of `u_k`. Three strategies are implemented (`--sign-recovery`):
+
+- **`hadamard_test`** — an ancilla qubit initialized to `|+⟩` controls
+  the evolution circuit; ancilla statistics yield `Re(⟨k|U|u⟩)`, from
+  which `sign(u_k)` is extracted per grid bin. Fully quantum — no
+  classical oracle.
+- **`dual_rail`** — the state is split into positive and negative
+  components, each evolved on a separate circuit; recombination
+  recovers the signed amplitudes. Doubles the circuit count.
+- **`classical_oracle`** — signs copied from the classical reference
+  solution. Diagnostic; defeats the standalone-solver purpose.
+- **`none`** — only valid when the true solution is known non-negative.
+
+#### 3.3.5 Dirichlet boundary enforcement
+
+The Pauli least-squares fit correctly targets `δ₀[0] = δ₀[N−1] = 0`
+(zero RHS at boundaries). However, the unitary `exp(−i·δτ·Â)` couples all
+amplitudes, causing `O(δτ)` leakage into boundary indices each step. We
+project back onto the Dirichlet subspace after each evolution:
+
+```
+u'[0] = u'[N−1] = 0,   then renormalize: u' ← u' / ‖u'‖                  (9)
+```
+
+This is the standard approach for enforcing hard BCs on quantum PDE
+solvers: the evolution is slightly non-physical at boundaries, and
+post-projection restores the constraint.
+
+#### 3.3.6 Complexity summary
+
+| Operation | Cost per step | Notes |
+|---|---|---|
+| Pauli decomposition (build `S`, solve) | `O(8^q)` | Dominant bottleneck |
+| Trotter circuit depth | `O(4^q · r)` | `r` = Trotter reps |
+| State initialization | `O(N)` | Qiskit `initialize()` |
+| Norm tracking | `O(N)` | Classical, 1 inner product |
+
+The `8^q` scaling makes this pathway impractical beyond `q ≈ 5–6`. At
+`q=7` (128 grid points) the overlap matrix alone has 16384 rows and 128
+columns, and must be rebuilt every timestep because the Hamiltonian is
+state-dependent.
+
+### 3.4 `mps` (hybrid, tensor)
+
+Encode the current `u` into an MPS circuit using the Ran 2020
+state-prep decomposition (with optional bond-dim truncation), simulate
+the circuit to obtain the quantum state, then apply the exact dense
+Hamiltonian evolution. Useful for studying MPS compression fidelity
+independently of time-integration error. Uses the same `O(4^q · N)`
+Pauli Hamiltonian as `quantum_exact`.
+
+### 3.5 `tebd` (classical, tensor)
+
+Build the dense Hermitian evolution generator directly from shift
+operators (`O(N²)`, bypassing the `O(4^q)` Pauli decomposition), compute
+`expm` once per step (`O(N³)`), convert to an MPO via
+`quimb.MatrixProductOperator.from_dense`, and apply the MPO to the MPS
+state with bond-dim truncation (`O(N · χ³)` per step). Multi-step
+delegating path. Scales to `q=12` (`N=4096`); the bottleneck is the
+dense `expm`, not the MPO ops.
+
+### 3.6 `tebd_circuit` (near-pure quantum)
+
+TEBD-style quantum circuit: MPS state-prep followed by a W-II (Zaletel)
+gate layer that encodes one evolution step. Uses the same `O(N²)` dense
+Hamiltonian as `tebd` (no Pauli decomposition). Per-step path through
+the framework loop. Not pure-quantum: the Hamiltonian is rebuilt from
+the current `u` each step (classical mirror). However the evolution
+itself — state-prep, gate layer, measurement — is entirely quantum. The
+classical mirror is confined to operator construction, not state readout
+or steerage.
+
+---
+
+## 4. Cole–Hopf family
+
+This family exploits the Cole–Hopf linearization to transform the
+nonlinear Burgers equation into the linear heat equation, which can be
+evolved with a time-independent quantum circuit — eliminating the
+per-step Pauli decomposition entirely.
+
+### 4.1 The Cole–Hopf substitution
+
+Define the potential function
+
+```
+φ(x, t) = exp(−(1/(2ν)) ∫₀ˣ u(s, t) ds)                                 (10)
+```
+
+Then `φ > 0` everywhere, and the unforced Burgers equation reduces to
+the linear heat equation
+
+```
+∂φ/∂t = ν ∇²φ                                                           (11)
+```
+
+The inverse transform recovers the velocity
+
+```
+u(x, t) = −2ν ∂_x ln φ(x, t)                                            (12)
+```
+
+The implementation uses cumulative trapezoidal integration for the
+forward transform (Eq. 10) and a central-difference log-derivative for
+the inverse (Eq. 12). For numerical stability at small `ν` the code
+operates in log-space: it computes `e(x) = −(1/(2ν)) ∫ u`, centres the
+exponent (`e − e_mid`), and converts to unit-norm `ψ` via log-sum-exp
+normalization.
+
+**BC mapping**: Dirichlet on `u` (`u(0) = u(L) = 0`) maps to Neumann on
+`φ` (`∂φ/∂x = 0` at boundaries) via Eq. 12. This is why the eigenbasis
+for Dirichlet problems is the DCT (cosine transform), not the DST or
+QFT.
+
+### 4.2 `cole_hopf` (classical, tensor reference)
+
+Apply Eq. 10, build the heat propagator `exp(ν·L·δt)` once as a dense
+matrix (`O(N³)` one-time cost), convert to MPO, and reuse it every step
+(state-independent). Per-step cost is `O(N · χ³)` for the MPO-on-MPS
+apply. Invert via Eq. 12 with log-domain finite differences. Multi-step
+delegating path.
+
+### 4.3 `cole_hopf_circuit` — Pure-Quantum Pathway 2
+
+Same Cole–Hopf linearization, but the heat equation is marched as a
+quantum circuit. Initial `φ` amplitudes are loaded onto qubits via the
+Ran 2020 MPS-to-circuit state-prep pipeline (the MPS is used only for
+encoding, not for evolution). In chunked mode the MPS prep is repeated
+at each chunk boundary (decode counts, re-encode). Three propagator
+variants are available (§§4.3.2–4.3.4). Sign recovery is not needed
+because `φ > 0` by construction.
+
+#### 4.3.1 Block-encoding of the heat propagator
+
+The heat propagator `P = exp(ν·L·δt)` is a contractive operator (all
+eigenvalues in `(0, 1]`) that must be embedded into a unitary circuit.
+All three variants use the same block-encoding strategy: an ancilla
+qubit rotated by `arccos(d_k)` conditioned on the eigenstate index `k`,
+so that post-selecting the ancilla in `|0⟩` implements the contraction
+
+```
+|k⟩|0⟩  →  |k⟩ (d_k|0⟩ + √(1−d_k²)|1⟩)                                  (13)
+```
+
+Post-selecting `ancilla = |0⟩` yields the state `Σ_k d_k ψ_k |k⟩` with
+probability `P_success = Σ_k d_k² |ψ_k|²`. The success probability
+degrades as `ν·δt` grows (stronger damping), requiring more shots in the
+stochastic regime.
+
+#### 4.3.2 Propagator A — `qft-diagonal` (periodic BC)
+
+The discrete periodic Laplacian is diagonalized by the DFT. Its
+eigenvalues are
+
+```
+λ_j = −(4/δx²) sin²(π·j/N),   j = 0, …, N−1                             (14)
+```
+
+The damping factors are `d_j = exp(ν·λ_j·δt)`, and the rotation angles
+are `θ_j = arccos(d_j)`. The per-step circuit is:
+
+1. QFT on `q` data qubits (to Fourier eigenbasis).
+2. Conditional-Ry(`2θ_k`) on ancilla, controlled by the `q`-bit index `k`.
+3. QFT⁻¹ on `q` data qubits (back to computational basis).
+4. Measure and reset ancilla.
+
+The conditional rotation uses a Möbius (inclusion–exclusion) expansion:
+`θ(k) = Σ_S a[S] ∏_{i ∈ S} b_i` where `k = Σ 2^i b_i`. Each non-zero
+`a[S]` yields one (multi-)controlled `Ry` gate. Gate count: `O(2^q)` for
+the conditional rotation, `O(q²)` for the QFT. CX counts measured at
+`q = 3 / 4 / 5`: 12 / 60 / 240.
+
+#### 4.3.3 Propagator B — `dense-block` (any BC, exact)
+
+For Dirichlet BC the eigenbasis is the DCT-II (cosine transform), with
+Neumann Laplacian eigenvalues
+
+```
+λ_k = −(4/δx²) sin²(π·k/(2N)),   k = 0, …, N−1                          (15)
+```
+
+The dense-block propagator builds the full `N × N` matrix
+`P = exp(ν·L·δt)`, eigendecomposes it (`P = V D V†`), and block-encodes
+via:
+
+1. `V†` on `q` data qubits (to eigenbasis via `UnitaryGate`).
+2. Conditional-Ry(`2 arccos(d_k / s_max)`) on ancilla, controlled by `k`.
+3. `V` on `q` data qubits (back to computational basis).
+4. Measure and reset ancilla.
+
+The `s_max` normalization ensures all rotation arguments lie in
+`[−1, 1]`. This propagator is exact per step (no Trotter error) and
+supports source-term forcing via a Strang-split potential `V(x, t)`.
+Gate count: `O(4^q)` due to the dense `UnitaryGate` — acceptable for
+`q ≤ 5` but limits scalability.
+
+#### 4.3.4 Propagator C — `lcu` (polynomial gate scaling)
+
+The Linear Combination of Unitaries (LCU) propagator achieves
+`O(M · q)` gate scaling, where `M` is the series truncation order.
+This is the key innovation for scaling to `q = 7–8` on Frontier-class
+machines.
+
+**Periodic BC — Taylor LCU.** For periodic BC the heat propagator is
+expanded directly in the Laplacian:
+
+```
+P_M = Σ_{k=0}^{M} (ν·δt)^k L^k / k!                                     (16)
+```
+
+Each power `L^k` of the discrete Laplacian
+`L = (S⁺ + S⁻ − 2I)/δx²` expands via the trinomial theorem into a sum of
+shift operators `S^n` with integer net shift `n = a − b`:
+
+```
+L^k = (1/δx²)^k Σ [k!/(a! b! c!)] (−2)^c (S⁺)^a (S⁻)^b,  a+b+c = k     (17)
+```
+
+Terms are aggregated by net shift, and each unique shift `S^n` is
+implemented as `n` cascaded increment/decrement circuits on `q` qubits.
+
+**Dirichlet BC — Fourier–Bessel LCU.** For Neumann BC (Dirichlet-on-`u`
+via Cole–Hopf) the propagator is diagonal in the DCT-II eigenbasis with
+entries
+
+```
+d_k = exp(ν·λ_k·δt) = exp(−A/2) · exp((A/2) cos(π·k/N))                 (18)
+```
+
+where `A = 4ν·δt/δx²`. The second factor is expanded via the
+Jacobi–Anger (modified Bessel) identity:
+
+```
+exp(x cos φ) = I₀(x) + 2 Σ_{j=1}^{M} I_j(x) cos(j·φ)                    (19)
+```
+
+where `I_j(x)` is the modified Bessel function of the first kind.
+Crucially, all Bessel coefficients are positive for `x > 0`, so no sign
+absorption is needed in the SELECT oracle. Each cosine term decomposes
+into two diagonal unitaries:
+
+```
+cos(j·π·k/N) = ½ [V_j⁺ + V_j⁻],   V_j±[k,k] = exp(±i·j·π·k/N)           (20)
+```
+
+Each `V_j±` is implemented as `q` single-qubit phase gates:
+`P(j·π · 2^l / N)` on qubit `l` for `l = 0, …, q−1`. This gives `2q`
+gates per Bessel term, for a total SELECT cost of `O(M · q)`.
+
+The full per-step circuit is:
+
+1. DCT on `q` data qubits (to cosine eigenbasis).
+2. PREPARE on `m = ⌈log₂(2M+1)⌉` ancilla qubits: `|0⟩^m → Σ_k α_k |k⟩`.
+3. SELECT: apply `V_k` conditioned on ancilla state `|k⟩`.
+4. PREPARE† (uncompute ancilla).
+5. DCT† on `q` data qubits (back to computational basis).
+6. Post-select all ancilla qubits on `|0⟩`.
+
+where `α_k = √(|c_k|/λ)` with `λ = Σ |c_k|`. Post-selecting
+`ancilla = |0⟩^m` yields the heat propagator divided by `λ`. The LCU
+normalization factor `λ` is tracked for amplitude rescaling. Verified:
+machine-precision agreement (`2.2 × 10⁻¹⁴`) with the dense-block
+reference at `q = 3`, `ν = 0.1`.
+
+#### 4.3.5 Source forcing
+
+With `--source` enabled, the per-step circuit becomes a Strang sandwich
+`exp(−V·δt/2) · LCU_heat · exp(−V·δt/2)`, where `V(x, t)` is the
+Cole–Hopf-mapped potential of the source `g(x, t)`. This adds two
+ancillas (one per half-step) and introduces `O(δt²)` Strang error. The
+`dense-block` and `lcu` propagators support source forcing;
+`qft-diagonal` does not.
+
+---
+
+## 5. QLBM (kinetic) family
+
+D1Q3 lattice Boltzmann: evolve three mesoscopic distributions
+`f_i(x, t)` on lattice velocities `c = (−1, 0, +1)` by a BGK collision
+plus streaming step, and recover the macroscopic velocity by moments:
+
+```
+ρ = Σ_i f_i,    ρ u = Σ_i c_i f_i                                        (21)
+```
+
+with athermal-Burgers weights `w_i = 1/3`. The LBM-native timestep is
+`δt_lbm = δx` (one lattice site per step); the caller's `δτ · n_steps`
+window is remapped to an integer number of lattice steps. Reference:
+Quartey & Zhong, RPI/IBM 2025 (the F11 source paper).
+
+### 5.1 `qlbm` (classical D1Q3)
+
+Pure-classical D1Q3 BGK solver. Collision relaxes `f` toward the
+equilibrium `f^eq(u)` with rate `1/τ`; streaming shifts each `f_i` by
+its velocity `c_i`. Periodic or bounce-back (Dirichlet) BC. `O(N)` per
+step. The classical kinetic baseline / reference for `qlbm_circuit`.
+
+### 5.2 `qlbm_circuit` (hybrid, quantum-circuit D1Q3)
+
+The same D1Q3 algorithm as a quantum circuit on `q + 2` qubits (`q`
+position qubits + 2 velocity qubits, interleaved encoding `|v⟩|p⟩`).
+Streaming is a controlled increment/decrement on the position register;
+collision is a dense unitary embedding ("Option A") rebuilt each step
+from the current distributions and applied with amplitude rescaling to
+account for its non-unitary contraction. Because the collision operator
+is rebuilt from the classical `f` and the state is decoded / re-encoded
+each step, a classical mirror remains in the loop. The statevector path
+is the real circuit; the shots path is presently a classical fallback
+(real-backend shots deferred, F11-13).
+
+---
+
+## 6. Comparative analysis
+
+### 6.1 Gate complexity per step
+
+| Pathway | Propagator | CX per step (`q=5`) | Asymptotic |
+|---|---|---|---|
+| Pauli–Trotter (`quantum_circuit`) | — | ~10 000+ | `O(8^q · r)` |
+| Cole–Hopf (`cole_hopf_circuit`) | `qft-diagonal` | 240 | `O(2^q + q²)` |
+| Cole–Hopf (`cole_hopf_circuit`) | `dense-block` | 1 280 | `O(4^q)` |
+| Cole–Hopf (`cole_hopf_circuit`) | `lcu` | `O(M · q)` | `O(M · q)` |
+| QLBM (`qlbm_circuit`) | (Option A) | dense `O(N²)` collision per step | `O(N²)` (Option B/QSVT pending) |
+
+The LCU propagator with Bessel truncation order `M = 8` requires
+`m = ⌈log₂(17)⌉ = 5` ancilla qubits and 16 diagonal unitaries × `q`
+phase gates each = `16q` CX-free gates per step. The PREPARE/PREPARE†
+state preparation adds `O(2^m)` gates but `m` is logarithmic in `M`.
+
+### 6.2 Accuracy characteristics
+
+- **Pauli–Trotter** — accuracy is determined by (a) the `lstsq` residual
+  of the Pauli decomposition, (b) the Trotter splitting error
+  `O(δτ^{k+1})` per step, and (c) sign-recovery fidelity in shots mode.
+  The Hamiltonian is re-fitted each step against the classical
+  reference, so errors do not compound — each step independently targets
+  the exact next state.
+- **Cole–Hopf** — the `dense-block` propagator is exact per step (no
+  Trotter error). `qft-diagonal` uses exact rotation angles via Möbius
+  expansion (no truncation). `lcu` introduces Taylor (periodic) or
+  Bessel (Dirichlet) series truncation, and all variants pay
+  post-selection cost. The Cole–Hopf transform itself contributes
+  discretization error from the trapezoidal quadrature (Eq. 10) and the
+  FD log-derivative (Eq. 12), both `O(δx²)`.
+- **QLBM** — accuracy carries the standard `O(δx²)` LBM discretization
+  error; the circuit `qlbm_circuit` adds amplitude-rescaling error from
+  the non-unitary collision embedding (statevector path is otherwise
+  bit-exact to the classical reference).
+
+### 6.3 Boundary-condition support
+
+| Pathway / variant | Periodic | Dirichlet |
+|---|---|---|
+| Pauli–Trotter (`quantum_circuit`) | ✓ | ✓ (post-step projection) |
+| Cole–Hopf, `qft-diagonal` | ✓ | — |
+| Cole–Hopf, `dense-block` | ✓ | ✓ |
+| Cole–Hopf, `lcu` | ✓ | ✓ |
+| QLBM (`qlbm`, `qlbm_circuit`) | ✓ | ✓ (bounce-back) |
+
+---
+
+## 7. Per-method CLI options
+
+Most flags only apply to a subset of methods. The CLI will raise an
+explicit "not supported" error for invalid combinations.
+
+### 7.1 Encoding (`--encoding {binary,gray}`)
+
+Used by `cole_hopf_circuit`. `binary` is index-aligned (default); `gray`
+uses the reflected Gray-code permutation `π(i) = i ⊕ (i >> 1)` on the
+Laplacian / propagator matrix. The encoding choice affects which
+two-qubit gates are nearest-neighbour after transpilation. See
+[SPEC-encoding-switch.md](future/SPEC-encoding-switch.md).
+
+### 7.2 Propagator (`--propagator {qft-diagonal,dense-block,lcu}`)
 
 Used by `cole_hopf_circuit`. Selects the heat-equation circuit
-construction:
+construction (§4.3.2 – §4.3.4). Source forcing (`--source sine`) is
+supported on `dense-block` and `lcu`; `qft-diagonal` + source raises
+`NotImplementedError`.
 
-- `qft-diagonal`: QFT → conditional-Ry on momentum eigenvalues →
-  inverse QFT. Exploits the fact that the Laplacian is diagonal in
-  the Fourier basis. Periodic BC only.
-- `dense-block`: build `M = ν·L·dt`, exponentiate via
-  eigendecomposition, encode as a block of a unitary using one
-  ancilla qubit + post-selection on `anc=0`. Supports any BC and
-  any diagonal potential (used by source forcing).
-- `lcu`: Taylor-expansion LCU (Linear Combination of Unitaries)
-  block-encoding of `exp(ν·L·dt)` using S+/S- shift-operator
-  primitives. Ancilla count = ceil(log2(K)) where K is the number
-  of distinct shift terms. Periodic BC only. Controlled by
-  `--lcu-taylor-order` (default 4). With `--source` enabled, the
-  per-step circuit becomes a Strang sandwich
-  `exp(-V·dt/2) · LCU_heat · exp(-V·dt/2)` with two extra V
-  ancillas (one per half-step), introducing O(dt²) Strang error.
-  See [SPEC-F3-LCU-method.md](SPEC-F3-LCU-method.md) and
-  [SPEC-F3-LCU-source-forcing.md](SPEC-F3-LCU-source-forcing.md).
+### 7.3 Trotter order / reps (`--trotter-order`, `--trotter-reps`)
 
-Source forcing (`--source sine`) is currently supported on
-`dense-block` and `lcu`. `qft-diagonal` + source raises
-`NotImplementedError`. See
-[SPEC-source-forcing.md](SPEC-source-forcing.md) and
-[SPEC-F3-LCU-source-forcing.md](SPEC-F3-LCU-source-forcing.md).
-
-### Trotter order / reps (`--trotter-order`, `--trotter-reps`)
-
-`quantum_circuit` only. Suzuki-Trotter order (1 or 2) and number of
+`quantum_circuit` only. Suzuki–Trotter order (1 or 2) and number of
 sub-step repetitions per timestep.
 
-### MPS bond dimension (`--bond-dim`, `--mps-threshold`)
+### 7.4 MPS bond dimension (`--bond-dim`, `--mps-threshold`)
 
 Used by `mps`, `tebd`, `tebd_circuit`, and the state-prep stage of
 `cole_hopf_circuit`. `--bond-dim None` keeps full rank;
 `--mps-threshold` is a singular-value cutoff during compression.
 
-### Sign recovery (`--sign-recovery`)
+### 7.5 Sign recovery (`--sign-recovery`)
 
-Applies to `quantum_circuit`, `mps`, `tebd_circuit` when reading
-out via shots. Methods that go through Cole-Hopf don't need it
-because `φ > 0` by construction. Choices:
+Applies to `quantum_circuit`, `mps`, `tebd_circuit` when reading out via
+shots. Methods that go through Cole–Hopf do not need it because `φ > 0`
+by construction. Choices and semantics in §3.3.4.
 
-- `none` — no sign recovery (only valid when the true solution is
-  known non-negative).
-- `classical_oracle` — recover sign from the classical FTCS
-  reference (diagnostic; cheats by definition).
-- `hadamard_test` — quantum sign extraction via interference.
-- `dual_rail` — encode `±` in a paired register.
+### 7.6 Shots and backend
 
-### Shots and backend
+`--shots N` (0 means statevector). `--backend-type {sim,fake,hardware}`,
+`--backend NAME`, `--t1`, `--t2`, `--coupling-map`, `--seed`,
+`--optimization-level`. See
+[SPEC-shots-backend.md](archive/SPEC-shots-backend.md).
 
-`--shots N` (0 means statevector). `--backend-type {sim,fake,
-hardware}`, `--backend NAME`, `--t1`, `--t2`, `--coupling-map`,
-`--seed`, `--optimization-level`. See
-[SPEC-shots-backend.md](SPEC-shots-backend.md).
+### 7.7 Evolution mode (`--evolution-mode {single,chunked}`, `--chunk-size`)
 
-### Evolution mode (`--evolution-mode {single,chunked}`, `--chunk-size`)
+`cole_hopf_circuit` shots-mode only. `single` = one big circuit with
+`n_steps` inlined step layers (today's default). `chunked` = break the
+evolution into `K`-step segments, read out and re-prep amplitudes
+between segments. Trades depth-per-circuit against shot-noise
+compounding. See [SPEC-chunked-evolution.md](archive/SPEC-chunked-evolution.md).
 
-`cole_hopf_circuit` shots-mode only. `single` = one big circuit
-with `n_steps` inlined step layers (today's default). `chunked` =
-break the evolution into K-step segments, read out and re-prep
-amplitudes between segments. Trades depth-per-circuit against
-shot-noise compounding. See
-[SPEC-chunked-evolution.md](SPEC-chunked-evolution.md).
+### 7.8 Source forcing (`--source {sine,none}`)
 
-### Source forcing (`--source {sine,none}`)
-
-All methods accept it. The `dense-block` path threads it through
-to a per-step `V(x,t)` potential in the heat propagator (see
-[SPEC-source-forcing.md](SPEC-source-forcing.md)). Other paths
+All methods accept it. The `dense-block` path threads it through to a
+per-step `V(x, t)` potential in the heat propagator (see
+[SPEC-source-forcing.md](archive/SPEC-source-forcing.md)). Other paths
 inject it directly into the `u` RHS or the φ-equation.
 
-### Time-window (`--shock-pct`, `--n-steps`)
+### 7.9 Time-window (`--shock-pct`, `--n-steps`)
 
 Either a percentage of the inviscid shock-formation time
-`t_shock = 1 / max|du₀/dx|` (resolves to an `n_steps` from the
-fixed CFL-derived dt), or an explicit step count.
+`t_shock = 1 / max|du₀/dx|` (resolves to an `n_steps` from the fixed
+CFL-derived `dt`), or an explicit step count.
 
-## 4. How the methods map to solverfw
+---
+
+## 8. Framework integration (`solverfw`)
 
 The package is wired to the framework in
 [`burgers_fw.py`](../src/burgers_fw.py).
 
-### 4.1 The pieces
+### 8.1 Components
 
-- **Config**: `BurgersConfig(SolverConfig)` adds every parameter in
-  §3 as a dataclass field. `describe()` returns a serialisable
-  summary.
-- **Grid**: `Grid1D.from_qubits(q, bc=...)`. Interior of the grid
-  depends on BC: Dirichlet includes both endpoints (so `u=0` is
-  satisfied by the sine IC); periodic excludes the right endpoint
-  since `x=0` and `x=1` are identified.
+- **Config**: `BurgersConfig(SolverConfig)` adds every CLI parameter in
+  §7 as a dataclass field. `describe()` returns a serializable summary.
+- **Grid**: `Grid1D.from_qubits(q, bc=...)`. Interior depends on BC:
+  Dirichlet includes both endpoints (so `u = 0` is satisfied by the
+  sine IC); periodic excludes the right endpoint since `x = 0` and
+  `x = 1` are identified.
 - **State**: `DenseState`. Burgers' state is a 1-D float array of
-  length N — the protocol's default impl is sufficient.
-- **SpatialOperator**: `ShiftFD` — central-difference RHS using
-  shift operators on `u`. This is *only* used by methods in the
-  per-step family below; delegating methods build their own
-  spatial structures internally.
-- **TimeIntegrator**: a different concrete subclass per method
-  (table below).
+  length `N` — the protocol's default implementation is sufficient.
+- **SpatialOperator**: `ShiftFD` — central-difference RHS using shift
+  operators on `u`. Used only by the per-step family below; delegating
+  methods build their own spatial structures internally.
+- **TimeIntegrator**: a different concrete subclass per method (tables
+  in §8.2, §8.3).
 - **MainLoop**: standard, unchanged from the framework.
 
-### 4.2 Per-step integrators (use the framework loop)
+### 8.2 Per-step integrators (use the framework loop)
 
 These five methods plug into `MainLoop` the normal way — `step()`
-advances one timestep, framework owns the loop:
+advances one timestep, the framework owns the loop:
 
 | `--method` | Integrator class | Step function it calls |
 |---|---|---|
@@ -261,141 +696,249 @@ advances one timestep, framework owns the loop:
 | `tebd_circuit` | `TEBDCircuitIntegrator` | `burgers_trotter.tebd_circuit_step` |
 
 Each integrator pulls the source value at time `t` from
-`config._source_fn(grid.xc, t)` and forwards it to the underlying
-step function along with `bc`, `nu`, `dt`. Returns
+`config._source_fn(grid.xc, t)` and forwards it to the underlying step
+function along with `bc`, `nu`, `dt`. Returns
 `(DenseState(u_new), metrics_dict)`.
 
-### 4.3 Delegating integrators (own their own loop)
+### 8.3 Delegating integrators (own their own loop)
 
-Three methods carry tensor / circuit state across timesteps, or
-pre-build a propagator once and reuse it. They do not fit the
+Five methods carry tensor / circuit / kinetic state across timesteps,
+or pre-build a propagator once and reuse it. They do not fit the
 per-step model. They use the delegating-integrator idiom from
-[SPEC-solverfw.md](../../q8020-cfd-metautil/docs/SPEC-solverfw.md)
-§5: subclass `TimeIntegrator`, but in `step()` run the *entire*
-multi-step simulation internally and return all snapshots via
-sentinel keys in the metrics dict.
+[SPEC-solverfw.md](../../q8020-cfd-metautil/docs/SPEC-solverfw.md) §5:
+subclass `TimeIntegrator`, but in `step()` run the *entire* multi-step
+simulation internally and return all snapshots via sentinel keys in the
+metrics dict.
 
 | `--method` | Integrator class | Inner driver |
 |---|---|---|
 | `tebd` | `TEBDIntegrator` | `burgers_tebd.run_tebd_simulation` |
 | `cole_hopf` | `ColeHopfIntegrator` | `burgers_cole_hopf.run_cole_hopf_simulation` |
 | `cole_hopf_circuit` | `ColeHopfCircuitIntegrator` | `burgers_cole_hopf_circuit.run_cole_hopf_circuit_simulation` |
+| `qlbm` | `QLBMIntegrator` | `burgers_qlbm.run_qlbm_simulation` |
+| `qlbm_circuit` | `QLBMCircuitIntegrator` | `burgers_qlbm_circuit.run_qlbm_circuit_simulation` |
 
 The set of delegating methods is recorded as
-`_DELEGATING_METHODS = {"tebd", "cole_hopf", "cole_hopf_circuit"}`
-in `burgers_fw.py`.
+`_DELEGATING_METHODS = {"tebd", "cole_hopf", "cole_hopf_circuit",
+"qlbm", "qlbm_circuit"}` in `burgers_fw.py`.
 
-### 4.4 The dispatcher
+### 8.4 Dispatcher
 
-`run_simulation_fw(config, grid, u0, source_fn)` attaches
-`source_fn` to `config._source_fn`, builds the right integrator via
+`run_simulation_fw(config, grid, u0, source_fn)` attaches `source_fn` to
+`config._source_fn`, builds the right integrator via
 `make_integrator(config)`, and either:
 
 - **Delegating method**: calls `integrator.step()` once with full
-  `n_steps`, pulls `_delegated_solutions` and `_delegated_metrics`
-  out of the returned metrics dict, returns those.
-- **Per-step method**: hands the integrator to `MainLoop().run()`
-  and returns its output.
+  `n_steps`, pulls `_delegated_solutions` and `_delegated_metrics` out
+  of the returned metrics dict, and returns those.
+- **Per-step method**: hands the integrator to `MainLoop().run()` and
+  returns its output.
 
 In either case the public return shape is
 `(solutions: list[np.ndarray], step_metrics: list[dict] | None)` —
-identical to the framework contract, identical across all eight
-methods.
+identical to the framework contract, identical across all ten methods.
 
-### 4.5 Backend management
+### 8.5 Backend management
 
 For the three quantum-circuit methods that shoot at a backend
-(`quantum_circuit`, `mps`, `tebd_circuit`) the backend is built
-once in `make_integrator()` via
-`q8020_cfd_qutil.backend.get_backend(...)` and stored on the
-integrator instance. `cole_hopf_circuit` builds its backend lazily
-inside the integrator's `_run_all` because it may not be needed
-(shots=0 path is statevector-only).
+(`quantum_circuit`, `mps`, `tebd_circuit`) the backend is built once in
+`make_integrator()` via `q8020_cfd_qutil.backend.get_backend(...)` and
+stored on the integrator instance. `cole_hopf_circuit` builds its
+backend lazily inside the integrator's `_run_all` because it may not be
+needed (`shots=0` path is statevector-only). `qlbm_circuit` is also
+handed a backend in `make_integrator()`, but it is not yet exercised —
+the shots path is currently a classical fallback (real-backend shots
+deferred to F11-13), so today it runs statevector-only.
 
-## 5. Directory map of the implementation
+---
+
+## 9. Implementation map
 
 ```
 q8020-mps-burgers/
 ├── input/
 │   └── burgers_quantum.toml         # q8020 sweep cases
+├── postproc/
+│   ├── plot_cole_hopf_circuit_evolution.py
+│   ├── plot_hadamard_time_evolution.py
+│   ├── plot_method_compare.py
+│   ├── plot_paper_aligned.py
+│   └── plot_pq_compare.py
 └── src/
     ├── burgers_solver.py            # CLI entry point + FTCS reference
-    ├── burgers_fw.py                # solverfw bindings (this doc §4)
+    ├── burgers_fw.py                # solverfw bindings (§8)
     ├── burgers_classical.py         # FTCS solve_burgers + source_term_sine
-    ├── burgers_nonlinear.py         # compute_rhs_shift used by ShiftFD
-    ├── burgers_trotter.py           # per-step quantum kernels
+    ├── burgers_nonlinear.py         # compute_rhs_shift used by ShiftFD;
+    │                                # Pauli decomp (Eqs. 5–7) + Trotter
+    │                                # circuit synthesis (Eq. 8)
+    ├── burgers_trotter.py           # per-step quantum kernels;
+    │                                # sign-recovery dispatch; Dirichlet
+    │                                # projection (Eq. 9)
     ├── burgers_mps.py               # Ran 2020 MPS prep + helpers
-    ├── burgers_mpo.py               # heat MPO for the cole_hopf classical path
+    ├── burgers_mpo.py               # heat MPO for the cole_hopf path
     ├── burgers_tebd.py              # TEBD multi-step driver
-    ├── burgers_cole_hopf.py         # CH classical pipeline + run_cole_hopf_simulation
-    ├── burgers_cole_hopf_circuit.py # CH quantum-circuit pipeline (full,sv,shots,chunked)
-    ├── burgers_potential.py         # V(x,t) for source-forced CH (SPEC-source-forcing)
+    ├── burgers_cole_hopf.py         # Forward/inverse CH transforms
+    │                                # (Eqs. 10, 12); log-domain stability
+    ├── burgers_cole_hopf_circuit.py # CH quantum-circuit pipeline;
+    │                                # qft-diagonal + dense-block;
+    │                                # Möbius conditional-Ry; DCT matrix
+    ├── burgers_lcu.py               # PREPARE/SELECT/LCU primitives;
+    │                                # Taylor LCU (periodic, Eqs. 16–17);
+    │                                # Fourier–Bessel LCU (Neumann,
+    │                                # Eqs. 18–20); Strang-split potential
+    ├── burgers_qlbm.py              # classical D1Q3 LBM (F11)
+    ├── burgers_qlbm_circuit.py      # quantum-circuit D1Q3 LBM (F11)
+    ├── burgers_potential.py         # V(x,t) for source-forced CH
     ├── burgers_encoding.py          # binary/gray encoding helpers
     ├── burgers_sign_recovery.py     # F9 sign-recovery strategies
     └── burgers_postprocess.py       # output writers, q8020 metrics dump
 ```
 
-Method-to-module crosswalk for "where does the actual physics
-live":
+Method-to-module crosswalk for "where does the actual physics live":
 
 | `--method` | Module |
 |---|---|
 | `shift` | `burgers_classical.py` (FTCS too) + `burgers_nonlinear.py` |
 | `quantum_exact` | `burgers_trotter.py::quantum_exact_step` |
-| `quantum_circuit` | `burgers_trotter.py::quantum_circuit_step` |
+| `quantum_circuit` | `burgers_trotter.py::quantum_circuit_step` + `burgers_nonlinear.py` |
 | `mps` | `burgers_trotter.py::mps_step` + `burgers_mps.py` |
 | `tebd` | `burgers_tebd.py::run_tebd_simulation` |
 | `tebd_circuit` | `burgers_trotter.py::tebd_circuit_step` |
 | `cole_hopf` | `burgers_cole_hopf.py::run_cole_hopf_simulation` |
-| `cole_hopf_circuit` | `burgers_cole_hopf_circuit.py::run_cole_hopf_circuit_simulation` |
+| `cole_hopf_circuit` | `burgers_cole_hopf_circuit.py::run_cole_hopf_circuit_simulation` + `burgers_lcu.py` |
+| `qlbm` | `burgers_qlbm.py::run_qlbm_simulation` |
+| `qlbm_circuit` | `burgers_qlbm_circuit.py::run_qlbm_circuit_simulation` |
 
-## 6. Run shape — a typical sweep case
+---
+
+## 10. Running cases
+
+### 10.1 Sweep harness (TOML)
 
 `input/burgers_quantum.toml` contains q8020-sweeper cases. A
-representative one for the Cole-Hopf circuit on a forced run:
+representative one for the Cole–Hopf circuit on a forced run:
 
 ```toml
 [cole_hopf_circuit_forced_q5_smoke]
-"--method" = "cole_hopf_circuit"
-"--propagator" = "dense-block"
-"--ic" = "sine"
-"--source" = "sine"
-"--nu" = 0.1
-"--cfl" = 0.1
-"--shock-pct" = 100.0
-"--q" = 5
-"--shots" = 50000
-"--backend-type" = "sim"
-"--seed" = 42
-"--save-every" = 1
-_group_postproc = "python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolution.py"
+"--method"        = "cole_hopf_circuit"
+"--propagator"    = "dense-block"
+"--ic"            = "sine"
+"--source"        = "sine"
+"--nu"            = 0.1
+"--cfl"           = 0.1
+"--shock-pct"     = 100.0
+"--q"             = 5
+"--shots"         = 50000
+"--backend-type"  = "sim"
+"--seed"          = 42
+"--save-every"    = 1
+_group_postproc = "python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"
 ```
 
 The sweeper converts this to a CLI invocation of `burgers_solver.py`
-and runs it; the postproc receives the resulting JSON dump (built
-by `burgers_postprocess.py`) and renders the comparison plot.
+and runs it; the postproc receives the resulting JSON dump (built by
+`burgers_postprocess.py`) and renders the comparison plot.
 
-## 7. What this solver does NOT do
+### 10.2 CLI quick reference for the pure-quantum pathways
 
-- **No 2-D / 3-D**. Strictly 1-D. The framework is general enough
-  for higher dims; the application is not.
-- **No adaptive `dt`**. Fixed dt = `cfl * dx` (or `--dt` override).
-- **No mesh refinement**.
-- **No real hardware execution by default**. `--backend-type
-  hardware` submits jobs and records placeholders; result harvest
-  is a separate workflow (see SPEC-shots-backend §10).
-- **No physics beyond viscous Burgers + source.** No reaction term,
-  no compressibility coupling, no multi-component.
+Pathway 1 (Pauli–Trotter, periodic):
 
-## 8. Where to read more
+```sh
+python burgers_solver.py --q 5 --method quantum_circuit \
+  --bc periodic --n-steps 10 --nu 1e-2 --noshow
+```
+
+Pathway 1 (Pauli–Trotter, Dirichlet):
+
+```sh
+python burgers_solver.py --q 5 --method quantum_circuit \
+  --bc dirichlet --n-steps 10 --nu 1e-2 --source none --noshow
+```
+
+Pathway 2 (Cole–Hopf, `qft-diagonal`, periodic):
+
+```sh
+python burgers_solver.py --q 5 --method cole_hopf_circuit \
+  --propagator qft-diagonal --bc periodic --n-steps 10 --nu 1e-2 \
+  --source none --noshow
+```
+
+Pathway 2 (Cole–Hopf, `lcu`, Dirichlet):
+
+```sh
+python burgers_solver.py --q 5 --method cole_hopf_circuit \
+  --propagator lcu --bc dirichlet --n-steps 10 --nu 1e-2 \
+  --source none --noshow
+```
+
+Pathway 2 (Cole–Hopf, `dense-block`, Dirichlet, with shots):
+
+```sh
+python burgers_solver.py --q 5 --method cole_hopf_circuit \
+  --propagator dense-block --bc dirichlet --n-steps 10 --nu 1e-2 \
+  --source none --shots 10000 --noshow
+```
+
+---
+
+## 11. What this solver does NOT do
+
+- **No 2-D / 3-D.** Strictly 1-D. The framework is general enough for
+  higher dimensions; the application is not.
+- **No adaptive `dt`.** Fixed `dt = cfl · dx` (or `--dt` override).
+- **No mesh refinement.**
+- **No real hardware execution by default.** `--backend-type hardware`
+  submits jobs and records placeholders; result harvest is a separate
+  workflow (see [SPEC-shots-backend.md](archive/SPEC-shots-backend.md)
+  §10).
+- **No physics beyond viscous Burgers + source.** No reaction term, no
+  compressibility coupling, no multi-component flow.
+
+---
+
+## 12. References and further reading
+
+### Primary publications
+
+- Meena, M. Gopalakrishnan et al., "A Tensor Network–based Quantum
+  Algorithm for the Nonlinear 1-D Burgers' Equation," AIAA 2026 — the
+  source paper for Pathway 1. Local copy:
+  [`refs/AIAA2026_QC_final.pdf`](refs/AIAA2026_QC_final.pdf).
+- Quartey, B. & Zhong, X., "Beyond the Simulator: A Practical
+  Demonstration of Quantum Lattice Boltzmann Methods on IBM Quantum,"
+  RPI / IBM, Nov 2025 — the source paper for the QLBM family.
+- Cole, J. D., "On a quasi-linear parabolic equation occurring in
+  aerodynamics," *Quart. Appl. Math.* **9**, 225 (1951); Hopf, E., "The
+  partial differential equation u_t + u u_x = ν u_xx," *Commun. Pure
+  Appl. Math.* **3**, 201 (1950) — the Cole–Hopf substitution
+  underlying Pathway 2.
+- Ran, S.-J., "Encoding of matrix product states into quantum circuits
+  of one- and two-qubit gates," *Phys. Rev. A* **101**, 032310 (2020) —
+  the MPS state-prep used by `mps` and by `cole_hopf_circuit`'s
+  initial-state loading.
+- Vidal, G., "Efficient classical simulation of slightly entangled
+  quantum computations," *Phys. Rev. Lett.* **91**, 147902 (2003) — TEBD.
+- Zaletel, M. P. et al., "Time-evolving a matrix product state with
+  long-ranged interactions," *Phys. Rev. B* **91**, 165112 (2015) —
+  W-II construction used by `tebd_circuit`.
+- Alhawwary, M. & Wang, Z. J., "Comparative analysis of high-order
+  methods for the Burgers equation," *J. Comput. Phys.* **373**, 835
+  (2018) — §5.3 Burgulence case (pending implementation, see
+  [SPEC-alhawwary-wang-5.3-burgulence.md](future/SPEC-alhawwary-wang-5.3-burgulence.md)).
+  Local copy: [`refs/AlhawwaryWang2018_…_Journal_of_Computational_Physics).pdf`](refs/AlhawwaryWang2018_Fourier_analysis_and_evaluation_of_DG,_Journal_of_Computational_Physics%29.pdf).
+
+### In-repo design specs and reviews
 
 | Topic | Doc |
 |---|---|
 | Framework itself | [`q8020-cfd-metautil/docs/SPEC-solverfw.md`](../../q8020-cfd-metautil/docs/SPEC-solverfw.md) |
-| Cole-Hopf circuit details | [`F10-IMPLEMENTATION-SPEC.md`](F10-IMPLEMENTATION-SPEC.md) |
-| Source forcing | [`SPEC-source-forcing.md`](SPEC-source-forcing.md), [`SPEC-source-forcing-REVIEW.md`](SPEC-source-forcing-REVIEW.md) |
-| Shots / backend / noise | [`SPEC-shots-backend.md`](SPEC-shots-backend.md) |
-| Chunked evolution | [`SPEC-chunked-evolution.md`](SPEC-chunked-evolution.md) |
-| Encoding (binary vs gray) | [`SPEC-encoding-switch.md`](SPEC-encoding-switch.md) |
-| Paper alignment | [`REVIEW-murali-paper-fidelity.md`](REVIEW-murali-paper-fidelity.md), [`DEEP-OVERLAP-murali-vs-ucan.md`](DEEP-OVERLAP-murali-vs-ucan.md) |
-| Pipeline handoff (legacy, may be stale) | [`HANDOFF-burgers-pipeline.md`](HANDOFF-burgers-pipeline.md) |
+| Cole-Hopf circuit (Pathway 2) details | [`F10-IMPLEMENTATION-SPEC.md`](archive/F10-IMPLEMENTATION-SPEC.md) |
+| QLBM family (F11) | [`F11-QLBM-SPEC.md`](archive/F11-QLBM-SPEC.md) |
+| LCU propagator (F3) | [`SPEC-F3-LCU-method.md`](archive/SPEC-F3-LCU-method.md), [`SPEC-F3-LCU-source-forcing.md`](archive/SPEC-F3-LCU-source-forcing.md) |
+| Source forcing | [`SPEC-source-forcing.md`](archive/SPEC-source-forcing.md), [`SPEC-source-forcing-REVIEW.md`](archive/SPEC-source-forcing-REVIEW.md) |
+| Shots / backend / noise | [`SPEC-shots-backend.md`](archive/SPEC-shots-backend.md) |
+| Chunked evolution | [`SPEC-chunked-evolution.md`](archive/SPEC-chunked-evolution.md) |
+| Encoding (binary vs gray) | [`SPEC-encoding-switch.md`](future/SPEC-encoding-switch.md) |
+| Paper-fidelity review | [`REVIEW-murali-paper-fidelity.md`](archive/REVIEW-murali-paper-fidelity.md), [`DEEP-OVERLAP-murali-vs-ucan.md`](archive/DEEP-OVERLAP-murali-vs-ucan.md) |
+| Future work / open gaps | [`FUTURE-WORK.md`](future/FUTURE-WORK.md) |
+| 2-D / QLBM-vs-MPS comparison design | [`DISCUSSION-2D-rotational-and-qlbm-comparison.md`](future/DISCUSSION-2D-rotational-and-qlbm-comparison.md) |

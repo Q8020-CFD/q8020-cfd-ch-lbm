@@ -206,7 +206,7 @@ F3.  LCU SELECT/PREPARE circuit
      expansion LCU for the heat propagator (`heat_lcu_step_circuit`).
      Wired into `cole_hopf_circuit` as `--propagator lcu` with
      `--lcu-taylor-order`.  Variant 1.A (`lcu_circuit` method) is
-     deferred.  See [SPEC-F3-LCU-method.md](SPEC-F3-LCU-method.md)
+     deferred.  See [SPEC-F3-LCU-method.md](archive/SPEC-F3-LCU-method.md)
      for full design.  Tests in `tests/test_lcu.py`.
 
 F4.  Variational fast-forwarding (Appendix A.B, Refs. 31, 34, 35)

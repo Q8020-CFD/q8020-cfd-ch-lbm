@@ -118,7 +118,7 @@ shipping first, Strang as follow-up.
 
 ### 1.3 B.2 — wiring
 
-Mostly already in place ([burgers_trotter.py:539](../src/burgers_trotter.py:539)
+Mostly already in place ([burgers_trotter.py:539](../../src/burgers_trotter.py:539)
 `tebd_circuit_step`; TOML cases `tebd_circuit_q3`, `tebd_circuit_q4` in
 `input/`). What B.2 still needs once B.1a is in:
 
@@ -178,9 +178,9 @@ Per `F2-PHASE-B1a-SPEC.md` §7:
 ### 2.1 Where we are
 
 The authoritative spec is `F10-IMPLEMENTATION-SPEC.md`. Substantial code
-exists in [src/burgers_cole_hopf_circuit.py](../src/burgers_cole_hopf_circuit.py)
+exists in [src/burgers_cole_hopf_circuit.py](../../src/burgers_cole_hopf_circuit.py)
 (~1.3k lines) and a test file at
-[tests/test_cole_hopf_circuit.py](../tests/test_cole_hopf_circuit.py).
+[tests/test_cole_hopf_circuit.py](../../tests/test_cole_hopf_circuit.py).
 
 | Parcel (`F10-IMPLEMENTATION-SPEC.md` §12) | Scope | Status |
 |---|---|---|

@@ -40,17 +40,17 @@ These already make it from CLI → `run_simulation` in
 `tebd_circuit` correctly call
 `q8020_cfd_qutil.backend.get_backend(name=backend_name,
 backend_type="sim", t1=t1, t2=t2)` and pass the resulting AerSimulator
-through every step ([burgers_trotter.py:735-737](../src/burgers_trotter.py:735)).
+through every step ([burgers_trotter.py:735-737](../../src/burgers_trotter.py:735)).
 
 **The gap is `cole_hopf_circuit`.** Two specific bugs:
 
 1. **Dispatch drops the args.** In
-   [burgers_trotter.py:713-720](../src/burgers_trotter.py:713) the
+   [burgers_trotter.py:713-720](../../src/burgers_trotter.py:713) the
    call to `run_cole_hopf_circuit_simulation` does not forward
    `backend_name`, `t1`, `t2`, `optimization_level`, `seed`, or
    `coupling_map`.
 2. **Backend is hardcoded.** In
-   [burgers_cole_hopf_circuit.py:537](../src/burgers_cole_hopf_circuit.py:537)
+   [burgers_cole_hopf_circuit.py:537](../../src/burgers_cole_hopf_circuit.py:537)
    `_run_shots_batch` does `backend = AerSimulator()` with no noise,
    no coupling map, no shots-seed plumbing.
 
@@ -126,7 +126,7 @@ picked up from `add_standard_quantum_args`.
 ### 5.1 `burgers_solver.py`
 
 At the call site of `run_simulation`
-([burgers_solver.py:237-254](../src/burgers_solver.py:237)), add the
+([burgers_solver.py:237-254](../../src/burgers_solver.py:237)), add the
 new args (already collected by argparse):
 
 ```python
@@ -156,9 +156,9 @@ Extend signature with `backend_type: str = "sim"`,
 `seed: int | None = None`.
 
 In the `cole_hopf_circuit` branch
-([burgers_trotter.py:713-720](../src/burgers_trotter.py:713)),
+([burgers_trotter.py:713-720](../../src/burgers_trotter.py:713)),
 construct the backend ONCE (matching the pattern at
-[:734-737](../src/burgers_trotter.py:734)) and forward it plus the
+[:734-737](../../src/burgers_trotter.py:734)) and forward it plus the
 relevant args:
 
 ```python
@@ -217,7 +217,7 @@ Forward all five new params into `_run_shots_batch`.
 #### 5.3.2 `_run_shots_batch`
 
 Replace the hard-coded `backend = AerSimulator()` block at
-[burgers_cole_hopf_circuit.py:536-547](../src/burgers_cole_hopf_circuit.py:536)
+[burgers_cole_hopf_circuit.py:536-547](../../src/burgers_cole_hopf_circuit.py:536)
 with a call into qutil:
 
 ```python
@@ -250,7 +250,7 @@ for raw_qc, s in zip(raw_circs, snap_steps):
 **The crucial detail: joint counts across registers.** The shots
 circuits have two classical registers, `data` (q bits) and
 `anc_hist` (one bit per Trotter step). Post-selection at
-[:548-578](../src/burgers_cole_hopf_circuit.py:548) needs the joint
+[:548-578](../../src/burgers_cole_hopf_circuit.py:548) needs the joint
 distribution — counts of `(data=X AND anc=Y)` on the SAME shot.
 This is NOT recoverable from per-register marginals.
 
@@ -264,7 +264,7 @@ The four data sources differ here:
 | `SamplerV2 ... pub_result.join_data().get_counts()` | one dict, joined bitstring | yes |
 
 The current `q8020_cfd_qutil.circuit.execute_circuit_counts`
-([circuit.py:114-127](../../q8020/q8020-cfd-qutil/src/q8020_cfd_qutil/circuit.py:114))
+([circuit.py:114-127](../../../q8020-cfd-qutil/src/q8020_cfd_qutil/circuit.py:114))
 returns marginals — first register only — which silently breaks our
 post-selection on V2-Sampler paths. We need joint counts.
 
@@ -337,7 +337,7 @@ Note the bitstring layout: Aer's `get_counts()` returns
 space separator). After stripping the space, the burgers
 post-selection reads `data_bits = bitstring[:q]` and
 `anc_bits = bitstring[q:]` — which matches the existing fallback
-branch at [burgers_cole_hopf_circuit.py:556-557](../src/burgers_cole_hopf_circuit.py:556)
+branch at [burgers_cole_hopf_circuit.py:556-557](../../src/burgers_cole_hopf_circuit.py:556)
 already. V2's `join_data().get_counts()` produces the same layout
 (no space). Either way the post-selection code at [:551-562]
 needs ONE small change: drop the `bitstring.split()` branch and
@@ -349,7 +349,7 @@ the two registers in the burgers circuits to a single
 Python. Keeps qutil unchanged, but loses semantic register names in
 transpiled circuits and forces a circuit-construction edit at three
 places ([:198-220, :297-318, and the heat_qft_full_circuit
-counterpart](../src/burgers_cole_hopf_circuit.py:198)).
+counterpart](../../src/burgers_cole_hopf_circuit.py:198)).
 
 #### 5.3.3 Hardware mode (async)
 
@@ -372,7 +372,7 @@ get joint counts (the same shape `execute_circuit_counts_joint`
 returns), then runs the post-selection / phi reconstruction /
 cole_hopf_inverse offline. Reuse the same post-selection code path.
 
-`get_job_result` ([qutil/job.py:99-101](../../q8020/q8020-cfd-qutil/src/q8020_cfd_qutil/job.py:99))
+`get_job_result` ([qutil/job.py:99-101](../../../q8020-cfd-qutil/src/q8020_cfd_qutil/job.py:99))
 currently calls `_extract_counts` which mirrors the marginal-only
 behaviour of `execute_circuit_counts`. The hardware harvester
 script will need either an `_extract_counts_joint` helper added to

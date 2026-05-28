@@ -21,7 +21,7 @@ Two findings from the original
 
 **Status today (2026-04-26).** Largely fixed in code:
 
-- [`burgers_classical.py:140-191`](../src/burgers_classical.py:140) —
+- [`burgers_classical.py:140-191`](../../src/burgers_classical.py:140) —
   `solve_burgers` calls `compute_rhs_shift(u, dx, nu, g, bc=bc)`,
   the same RHS the quantum methods use. The legacy
   `gradient_central`, `laplacian_central`, `euler_step`,
@@ -29,9 +29,9 @@ Two findings from the original
   the file but have docstrings marking them as "Legacy — not used
   by the solver." They are reachable only from the `__main__` smoke
   test and from `test_mpo.py`.
-- [`burgers_nonlinear.py::compute_rhs_shift`](../src/burgers_nonlinear.py)
+- [`burgers_nonlinear.py::compute_rhs_shift`](../../src/burgers_nonlinear.py)
   takes `bc` and passes through to
-  [`burgers_mpo.py::shift_matrix`](../src/burgers_mpo.py:61) which
+  [`burgers_mpo.py::shift_matrix`](../../src/burgers_mpo.py:61) which
   zeroes the wrap entries on `bc=dirichlet`. Plumbing is correct.
 
 What remains is **rigor**, not refactor: prove the paths are
@@ -59,7 +59,7 @@ After this parcel:
 - **Add Dirichlet support to direct-`u` quantum methods** that
   don't have it today (`quantum_circuit`, `mps`, `tebd_circuit`).
   Out of scope. They run periodic-only by design — see
-  [OVERVIEW-burgers-solver.md §4.2](OVERVIEW-burgers-solver.md).
+  [OVERVIEW-burgers-solver.md §4.2](../OVERVIEW-burgers-solver.md).
   Adding Dirichlet is a separate parcel; this spec only proves the
   *existing* BC handling is internally consistent.
 - **Change the FTCS scheme.** `solve_burgers` stays forward-Euler +
@@ -78,7 +78,7 @@ Two options. Pick one:
 **Option A (clean):** delete the legacy functions outright.
 
 - Remove from
-  [`burgers_classical.py`](../src/burgers_classical.py):
+  [`burgers_classical.py`](../../src/burgers_classical.py):
   `gradient_central`, `laplacian_central`, `euler_step`,
   `build_gradient_matrix`, `build_laplacian_matrix`.
 - Remove the `__main__` smoke test (or rewrite it to call

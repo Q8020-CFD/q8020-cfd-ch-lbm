@@ -20,7 +20,7 @@ import matplotlib.animation as manimation
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from q8020_cfd_metautil.harvest import harvest_metadata
 from q8020_cfd_metautil.metakeys import _walk_case_dirs

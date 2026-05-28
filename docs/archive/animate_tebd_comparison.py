@@ -20,7 +20,7 @@ import matplotlib.animation as manimation
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from burgers_cole_hopf import run_cole_hopf_simulation
 from burgers_tebd import run_tebd_simulation

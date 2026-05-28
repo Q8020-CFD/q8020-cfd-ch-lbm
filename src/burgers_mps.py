@@ -1,7 +1,8 @@
 """MPS state preparation for quantum encoding of classical fields.
 
-Implements the MPS decomposition from Murali et al. AIAA 2026 (Eq. 5-6)
-and the MPS-to-circuit conversion following Ran 2020 (Ref [27]).
+Implements the MPS decomposition from Gopalakrishnan Meena et al.
+AIAA-2026 §III.B.1 (Eqs. 5-6) and the MPS-to-circuit conversion
+following Ran 2020 (Ref [27]).
 
 Given a classical vector u of length N = K^q (K=2 for qubits), the state
 is decomposed into q site tensors A^k via iterated SVD, then each site

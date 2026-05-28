@@ -1,15 +1,23 @@
 """Hybrid classical-quantum time evolution for Burgers equation.
 
-Implements the time-marching validation from Murali et al. Section V.C
-using quantum circuits for operator application.
+The `quantum_circuit_step` here is the per-step driver for Gopalakrishnan
+Meena et al. AIAA-2026 Appendix A.A (Eqs. 16-17): fit a Hermitian Pauli
+operator Â per timestep so that e^{-iÂδτ}|u⟩ reproduces the classical
+Euler update, then evolve via a Suzuki-Trotter circuit.
 
-At each time step (Eq. 15):
+NOTE: the paper's §V.C (classical Euler with `quimb` MPS/MPO spatial
+operators) is NOT implemented in this module.  The classical reference
+used here (`compute_rhs_shift` in burgers_nonlinear) matches the FORM of
+§V.C Eq. 15 but uses plain shift-matrix FD, not MPS/MPO via quimb.
+
+At each time step the underlying classical update is (§V.C Eq. 15):
   u(t+δτ) = u(t) + δτ [ν∇²u - u·∇u + g]
 
 Four methods are provided:
 1. shift_euler: classical Euler with shift-operator FD (periodic BC)
 2. quantum_exact: Pauli decomposition + exact matrix exponential
-3. quantum_circuit: Pauli decomposition + Trotterized circuit
+3. quantum_circuit: Pauli decomposition + Trotterized circuit (Meena
+   Appendix A.A)
 4. mps: MPS state-prep circuit + exact Hamiltonian evolution
 
 All methods operate on the physical (un-normalized) velocity field and

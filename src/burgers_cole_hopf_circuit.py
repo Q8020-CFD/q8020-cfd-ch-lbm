@@ -1285,8 +1285,9 @@ def _run_shots_batch(
 
     State preparation uses the Ran 2020 MPS-to-circuit pipeline
     (``burgers_mps.classical_to_mps`` + ``mps_to_circuit``), matching
-    Murali/Meena AIAA-2026 Eq. 5-6 + Ref [27].  ``bond_dim=None``
-    means full-rank (no truncation); finite values truncate the MPS.
+    Gopalakrishnan Meena AIAA-2026 Eqs. 5-6 plus Ran 2020 (Ref [27]).
+    ``bond_dim=None`` means full-rank (no truncation); finite values
+    truncate the MPS.
 
     use_mps_prep: True (default) uses the Ran 2020 MPS-to-circuit
         path; False falls back to QuantumCircuit.initialize for

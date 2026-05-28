@@ -4,8 +4,11 @@ PDE:  du/dt + (1/2) d(u*u)/dx - nu * d2u/dx2 = g(x, t)
 
 The production solver (solve_burgers) uses forward-time explicit Euler
 with shift-operator finite differences (via compute_rhs_shift from
-burgers_nonlinear), matching the verification approach in Murali et al.
-AIAA 2026.
+burgers_nonlinear).  The form of the update matches Gopalakrishnan Meena
+et al. AIAA-2026 §V.C Eq. 15, but here the spatial operators are plain
+shift-matrix FD (not quimb MPS/MPO as in the paper).  This serves as
+our internal classical reference; the paper's actual §V.C MPS/MPO
+pipeline can be used as an external cross-check.
 
 The functions gradient_central, laplacian_central, euler_step,
 build_gradient_matrix, and build_laplacian_matrix are legacy

@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import savgol_filter
 
-_pkg_root = Path(__file__).resolve().parent.parent
+_pkg_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_pkg_root))
 sys.path.insert(0, str(_pkg_root / "src"))
 

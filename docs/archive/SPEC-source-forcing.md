@@ -9,7 +9,7 @@ conversations.
 Burgers. Source code at `/Users/agallojr/proj/src/q8020-mps-burgers/`.
 The `cole_hopf_circuit` method today silently drops the `--source`
 flag at the dispatch in
-[burgers_trotter.py:713-720](../src/burgers_trotter.py:713) — it
+[burgers_trotter.py:713-720](../../src/burgers_trotter.py:713) — it
 solves **unforced** Burgers regardless. The classical FTCS baseline
 in `burgers_solver.py` keeps the source. So when a user runs
 `--ic sine --source sine` the two legs are solving different PDEs
@@ -119,9 +119,9 @@ shot noise at 100k shots, plus second-order Strang error in dt).
 ## 4. CLI surface
 
 No new flags. `--source {sine,none}` already exists in
-[burgers_solver.py:103-105](../src/burgers_solver.py:103). The
+[burgers_solver.py:103-105](../../src/burgers_solver.py:103). The
 implementation must thread `source_fn` (already constructed at
-[:203](../src/burgers_solver.py:203)) through dispatch into the
+[:203](../../src/burgers_solver.py:203)) through dispatch into the
 quantum CH propagator builder.
 
 If we ever support more sources, add them as `--source` choices in
@@ -132,7 +132,7 @@ the existing argparse — out of scope for this spec.
 ### 5.1 Dispatch — `burgers_trotter.py::run_simulation`
 
 The `cole_hopf_circuit` branch at
-[burgers_trotter.py:713-720](../src/burgers_trotter.py:713) currently
+[burgers_trotter.py:713-720](../../src/burgers_trotter.py:713) currently
 does NOT pass `source_fn`. Add it:
 
 ```python
@@ -204,7 +204,7 @@ def potential_from_source(
 ### 5.4 `heat_dense_block_step_circuit` — accept potential
 
 Add a `V: np.ndarray | None = None` parameter at
-[burgers_cole_hopf_circuit.py:225-279](../src/burgers_cole_hopf_circuit.py:225).
+[burgers_cole_hopf_circuit.py:225-279](../../src/burgers_cole_hopf_circuit.py:225).
 Modify the propagator math:
 
 ```python
@@ -239,7 +239,7 @@ all work unchanged on the modified M. M is still real symmetric.
 ### 5.5 `heat_dense_block_full_circuit` — per-step V
 
 Today this builder constructs ONE `step_qc` and inlines it `N_steps`
-times ([burgers_cole_hopf_circuit.py:282-321](../src/burgers_cole_hopf_circuit.py:282)).
+times ([burgers_cole_hopf_circuit.py:282-321](../../src/burgers_cole_hopf_circuit.py:282)).
 With time-dependent V, each step needs its own step_qc. Restructure
 to a per-step build loop:
 
@@ -275,7 +275,7 @@ Add `source_fn=None`, `x=None` kwargs. Pass through to
 `heat_dense_block_full_circuit`. The SV path
 (`run_cole_hopf_circuit_sv` + `_build_step_sv`) needs the same
 treatment for the statevector branch — it currently builds a single
-step_qc and reuses it ([burgers_cole_hopf_circuit.py:408-462](../src/burgers_cole_hopf_circuit.py:408)).
+step_qc and reuses it ([burgers_cole_hopf_circuit.py:408-462](../../src/burgers_cole_hopf_circuit.py:408)).
 For source, the SV path also needs per-step propagator rebuild.
 
 Implementation note: `_build_step_sv` with V plumbing has the same
@@ -284,7 +284,7 @@ per-step builder list `step_qcs[s]`.
 
 ### 5.7 Caller — `run_cole_hopf_circuit_simulation`
 
-Inside this function ([burgers_cole_hopf_circuit.py:592+](../src/burgers_cole_hopf_circuit.py:592)),
+Inside this function ([burgers_cole_hopf_circuit.py:592+](../../src/burgers_cole_hopf_circuit.py:592)),
 construct nothing new — just thread `source_fn` and `x` through to
 `_run_shots_batch` (shots path) and `run_cole_hopf_circuit_sv`
 (shots=0 path).

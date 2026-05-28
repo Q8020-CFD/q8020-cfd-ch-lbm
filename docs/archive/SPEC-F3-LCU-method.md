@@ -20,7 +20,7 @@ that wiring the existing dead-code stubs into a real method would
 close the question.
 
 We have unwired raw materials in
-[`burgers_mpo.py`](../src/burgers_mpo.py):
+[`burgers_mpo.py`](../../src/burgers_mpo.py):
 
 - `increment_circuit(q)` — `S+` ladder operator (binary increment
   mod 2^q).
@@ -310,7 +310,7 @@ In a new function `run_lcu_circuit_simulation(...)`:
    uses LCU as a circuit-synthesis tool inside Trotter.)
 4. Compose with state prep + measurement; run; post-select.
 
-Wire into [`burgers_fw.py`](../src/burgers_fw.py) as a per-step
+Wire into [`burgers_fw.py`](../../src/burgers_fw.py) as a per-step
 integrator (not a delegating one — same shape as
 `QuantumCircuitIntegrator`):
 
@@ -331,16 +331,16 @@ class LCUCircuitIntegrator(TimeIntegrator):
 ```
 
 Add `"lcu_circuit"` to the argparse choices in
-[`burgers_solver.py:113-117`](../src/burgers_solver.py:113) and to
+[`burgers_solver.py:113-117`](../../src/burgers_solver.py:113) and to
 the registry in
-[`burgers_fw.py::make_integrator`](../src/burgers_fw.py:340).
+[`burgers_fw.py::make_integrator`](../../src/burgers_fw.py:340).
 
 ### 5.3 Variant 1.B driver — `lcu` propagator for `cole_hopf_circuit`
 
-Extends [`burgers_cole_hopf_circuit.py`](../src/burgers_cole_hopf_circuit.py).
+Extends [`burgers_cole_hopf_circuit.py`](../../src/burgers_cole_hopf_circuit.py).
 Add `propagator="lcu"` branch alongside `qft-diagonal` and
 `dense-block` in
-[`heat_dense_block_full_circuit`](../src/burgers_cole_hopf_circuit.py:294)
+[`heat_dense_block_full_circuit`](../../src/burgers_cole_hopf_circuit.py:294)
 and its SV twin.
 
 ```python
@@ -487,7 +487,7 @@ the typical `(q, ν, dt)` we run. Tune via convergence studies.
       `lcu_circuit` method available."
 - [ ] [IMPLEMENTATION-PLAN.md F3](IMPLEMENTATION-PLAN.md:202)
       annotated with status pointer to this spec.
-- [ ] [OVERVIEW-burgers-solver.md](OVERVIEW-burgers-solver.md) §2
+- [ ] [OVERVIEW-burgers-solver.md](../OVERVIEW-burgers-solver.md) §2
       table updated with `lcu_circuit` method and `lcu`
       propagator.
 

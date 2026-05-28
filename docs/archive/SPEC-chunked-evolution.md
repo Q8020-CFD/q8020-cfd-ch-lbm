@@ -6,7 +6,7 @@ Self-contained handoff. Reader has not seen prior conversation.
 
 `q8020-mps-burgers` runs a Cole-Hopf quantum-circuit pipeline for 1D
 Burgers. The shots path (`_run_shots_batch` in
-[burgers_cole_hopf_circuit.py:532](../src/burgers_cole_hopf_circuit.py:532))
+[burgers_cole_hopf_circuit.py:532](../../src/burgers_cole_hopf_circuit.py:532))
 today builds, for each requested snapshot at step `s`, an
 *independent* full circuit that prepares the IC and inlines `s` step
 layers, then runs `shots` shots. Two pathologies:
@@ -59,7 +59,7 @@ hangs); final-time L2 vs FTCS within shot-noise+compounding floor
 
 ## 3. Non-goals
 
-- **SV path (`shots=0`).** [`run_cole_hopf_circuit_sv`](../src/burgers_cole_hopf_circuit.py:420)
+- **SV path (`shots=0`).** [`run_cole_hopf_circuit_sv`](../../src/burgers_cole_hopf_circuit.py:420)
   already does one matvec per step and snapshots classically. No
   redundancy. Untouched.
 - **Hardware path (`backend_type == "hardware"`).** Real quantum
@@ -133,7 +133,7 @@ For chunked + `--save-every K`: enforce `chunk_size == save_every`
 enforces equality with a clear error). This collapses two knobs that
 fundamentally do the same thing.
 
-Add to argparse in [`burgers_solver.py`](../src/burgers_solver.py)
+Add to argparse in [`burgers_solver.py`](../../src/burgers_solver.py)
 alongside the existing `--save-every`.
 
 ## 6. Plumbing changes
@@ -244,7 +244,7 @@ if shots > 0:
 
 ### 6.3 Top-level dispatch — `run_simulation`
 
-In [`burgers_trotter.py`](../src/burgers_trotter.py) thread
+In [`burgers_trotter.py`](../../src/burgers_trotter.py) thread
 `evolution_mode` and `chunk_size` from CLI args through to
 `run_cole_hopf_circuit_simulation`. Mechanical kwarg add at the
 existing dispatch block.
@@ -254,7 +254,7 @@ existing dispatch block.
 When `source_fn is not None`, each chunk's propagator builds V(x,t)
 at midpoints `t = (step_idx + 0.5) * dt` where `step_idx` is the
 *global* step, not chunk-local. Today `heat_dense_block_full_circuit`
-([../src/burgers_cole_hopf_circuit.py:294](../src/burgers_cole_hopf_circuit.py:294))
+([../src/burgers_cole_hopf_circuit.py:294](../../src/burgers_cole_hopf_circuit.py:294))
 implicitly assumes `step_idx` starts at 0. Add a `t_start: float = 0.0`
 parameter and use `t_mid = t_start + (step_idx + 0.5) * dt` so chunk
 N+1 evaluates V at the correct global time.

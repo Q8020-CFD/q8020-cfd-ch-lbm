@@ -18,7 +18,7 @@ end-to-end. It mirrors the source-forcing work already done for
 keeping `lcu`'s pure-quantum-in-the-time-loop guarantee intact.
 
 **Status going in**: today's
-[`run_cole_hopf_circuit_simulation`](../src/burgers_cole_hopf_circuit.py)
+[`run_cole_hopf_circuit_simulation`](../../src/burgers_cole_hopf_circuit.py)
 has a guard at lines 1116–1123:
 
 ```python
@@ -63,7 +63,7 @@ After this parcel:
   for v1. Higher orders deferred.
 - **`--bc dirichlet` for LCU.** LCU is periodic-only in v1 (the
   guard at
-  [burgers_cole_hopf_circuit.py:1125-1129](../src/burgers_cole_hopf_circuit.py:1125)
+  [burgers_cole_hopf_circuit.py:1125-1129](../../src/burgers_cole_hopf_circuit.py:1125)
   stays). Forced + Dirichlet is a separate parcel.
 - **Direct non-commuting Taylor expansion of
   `exp((νL − V)·dt)`.** Considered; rejected. Strang is cheaper,
@@ -80,7 +80,7 @@ Forced φ-equation under Cole-Hopf:
 ```
 
 Where V comes from the source via
-[`burgers_potential.potential_from_source`](../src/burgers_potential.py)
+[`burgers_potential.potential_from_source`](../../src/burgers_potential.py)
 (`V_x = +g/(2ν)`, gauge-fixed mean-zero — see SPEC-source-forcing
 §1, with the corrected sign confirmed in
 [SPEC-source-forcing-REVIEW.md](SPEC-source-forcing-REVIEW.md)).
@@ -101,7 +101,7 @@ LCU.
 
 V is evaluated at the **Strang midpoint** `t_mid = t_n + dt/2` of
 each step. (Same convention dense-block uses; see
-[burgers_cole_hopf_circuit.py:334](../src/burgers_cole_hopf_circuit.py:334).)
+[burgers_cole_hopf_circuit.py:334](../../src/burgers_cole_hopf_circuit.py:334).)
 
 ### 3.1 Per-step P_success
 
@@ -141,7 +141,7 @@ data measurements at the end).
 
 ### 4.1 New function — `diag_potential_block_encoding`
 
-In [`burgers_lcu.py`](../src/burgers_lcu.py), add after
+In [`burgers_lcu.py`](../../src/burgers_lcu.py), add after
 `heat_lcu_step_circuit`:
 
 ```python
@@ -192,8 +192,8 @@ def diag_potential_block_encoding(
 ```
 
 This is the same controlled-Ry pattern used by dense-block at
-[burgers_cole_hopf_circuit.py:488-495](../src/burgers_cole_hopf_circuit.py:488)
-and [:482-497](../src/burgers_cole_hopf_circuit.py:482). Copy-
+[burgers_cole_hopf_circuit.py:488-495](../../src/burgers_cole_hopf_circuit.py:488)
+and [:482-497](../../src/burgers_cole_hopf_circuit.py:482). Copy-
 paste-adapt.
 
 ### 4.2 New function — `heat_lcu_with_potential_step_circuit`
@@ -306,7 +306,7 @@ Recommend **Option B**. Less abstract, easier to debug.
 
 ### 4.3 Modify `_build_step_sv` to accept V (LCU branch)
 
-In [`burgers_cole_hopf_circuit.py`](../src/burgers_cole_hopf_circuit.py),
+In [`burgers_cole_hopf_circuit.py`](../../src/burgers_cole_hopf_circuit.py),
 the LCU branch at lines 498–506 currently ignores V:
 
 ```python
@@ -349,7 +349,7 @@ line 447. The LCU branch just needs to honour it.)
 ### 4.4 Modify the SV path post-selection projection
 
 `run_cole_hopf_circuit_sv` projects on `sv[:N]` per step
-([burgers_cole_hopf_circuit.py:614](../src/burgers_cole_hopf_circuit.py:614)).
+([burgers_cole_hopf_circuit.py:614](../../src/burgers_cole_hopf_circuit.py:614)).
 This works for any propagator with a single contiguous
 "all-ancillas-zero" subspace at the front of the statevector.
 
@@ -375,11 +375,11 @@ path.
 ### 4.5 Modify `heat_lcu_full_circuit` for per-step rebuild
 
 Today's
-[`heat_lcu_full_circuit`](../src/burgers_cole_hopf_circuit.py:388)
+[`heat_lcu_full_circuit`](../../src/burgers_cole_hopf_circuit.py:388)
 builds one `step_qc` and inlines `N_steps` times — correct for
 unforced. With source, V_n changes per step, so each step needs a
 fresh `step_qc`. Mirror the pattern in
-[`heat_dense_block_full_circuit`](../src/burgers_cole_hopf_circuit.py:294)
+[`heat_dense_block_full_circuit`](../../src/burgers_cole_hopf_circuit.py:294)
 (specifically lines 322–349 which guard on `source_fn is None`).
 
 Add `source_fn`, `x`, `t_start: float = 0.0` parameters; branch
@@ -415,7 +415,7 @@ and "all anc bits zero" is the same predicate.
 
 ### 4.6 Source guard — `run_cole_hopf_circuit_simulation`
 
-[burgers_cole_hopf_circuit.py:1116–1123](../src/burgers_cole_hopf_circuit.py:1116):
+[burgers_cole_hopf_circuit.py:1116–1123](../../src/burgers_cole_hopf_circuit.py:1116):
 
 ```python
 if source_fn is not None and propagator not in ("dense-block",):
@@ -428,7 +428,7 @@ unsupported combination.
 
 ### 4.7 Chunked driver — `_run_shots_chunked`
 
-[burgers_cole_hopf_circuit.py:751–755](../src/burgers_cole_hopf_circuit.py:751)
+[burgers_cole_hopf_circuit.py:751–755](../../src/burgers_cole_hopf_circuit.py:751)
 already passes `source_fn` and `x` only to the dense-block branch.
 Extend the LCU branch to do the same:
 
@@ -447,7 +447,7 @@ that's already in the dense-block branch.
 
 ### 4.8 Batch driver — `_run_shots_batch`
 
-[burgers_cole_hopf_circuit.py:931–935](../src/burgers_cole_hopf_circuit.py:931):
+[burgers_cole_hopf_circuit.py:931–935](../../src/burgers_cole_hopf_circuit.py:931):
 
 ```python
 elif propagator == "lcu":
@@ -502,7 +502,7 @@ tests to confirm no breakage.
 
 ## 6. q8020 TOML smoke
 
-Append to [`burgers_quantum.toml`](../input/burgers_quantum.toml)
+Append to [`burgers_quantum.toml`](../../input/burgers_quantum.toml)
 in the LCU block already established by the unforced smoke:
 
 ```toml
@@ -563,7 +563,7 @@ _group_postproc = ["python ./q8020-mps-burgers/docs/plot_cole_hopf_circuit_evolu
 - [ ] [SPEC-F3-LCU-method.md](SPEC-F3-LCU-method.md) §3
       non-goal "qft-diagonal/lcu+source" updated to
       "qft-diagonal+source" — LCU+source is no longer a non-goal.
-- [ ] [OVERVIEW-burgers-solver.md](OVERVIEW-burgers-solver.md)
+- [ ] [OVERVIEW-burgers-solver.md](../OVERVIEW-burgers-solver.md)
       §3 source-forcing section: "Currently supported only on
       `dense-block`" → "Currently supported on `dense-block` and
       `lcu`."

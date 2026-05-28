@@ -1,14 +1,23 @@
 """Solve 1D Burgers equation via quantum tensor-network algorithm.
 
-Implements the hybrid classical-quantum pipeline from Murali et al. AIAA 2026.
-At each time step:
-  u(t+δτ) = u(t) + δτ [ν∇²u - u·∇u + g]
+The `quantum_circuit` method implements Gopalakrishnan Meena et al.
+AIAA-2026 Appendix A.A (Eqs. 16-17): per-step Pauli decomposition of
+the classical Euler RHS, then Trotterized circuit evolution of the
+fitted unitary e^{-iÂδτ}.  The paper's §V.C pipeline (classical Euler
+with `quimb` MPS/MPO spatial operators) is NOT implemented here; we
+use it externally as a reference path.
 
-Four evolution methods are supported:
-- shift: classical Euler with shift-operator FD (periodic BC)
+At each time step the underlying classical update has the §V.C Eq. 15
+form: u(t+δτ) = u(t) + δτ [ν∇²u - u·∇u + g], but the spatial operators
+are plain shift-matrix FD, not MPS/MPO via quimb.
+
+Methods supported (see docs/OVERVIEW-burgers-solver.md for the full
+list and classification):
+- shift: classical Euler with shift-operator FD
 - quantum_exact: Pauli decomposition + exact matrix exponential
-- quantum_circuit: Pauli decomposition + Trotterized circuit
+- quantum_circuit: Pauli decomposition + Trotterized circuit (Appendix A.A)
 - mps: MPS state-prep circuit + exact Hamiltonian evolution
+- tebd / tebd_circuit / cole_hopf{,_circuit} / qlbm{,_circuit}
 
 Integrates with q8020 sweeper via argparse CLI and metadata fragment writers.
 """

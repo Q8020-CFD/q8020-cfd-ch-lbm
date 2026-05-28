@@ -1,25 +1,27 @@
 """Nonlinear evolution operator via Pauli decomposition.
 
-Implements Appendix A from Murali et al. AIAA 2026: the full time-step
-evolution operator Â = Σ c_i P̂_i is constructed by solving a linear system
-that matches the quantum unitary evolution e^{-iδτÂ} to the classical
-Euler update.
+Implements Appendix A.A from Gopalakrishnan Meena et al. AIAA-2026
+(the "Proposed algorithms" appendix that the paper itself flags as
+future work — not the §V.C MPS/MPO classical pipeline).  The full
+time-step evolution operator Â = Σ c_i P̂_i is constructed by solving
+the linear system that matches the quantum unitary evolution e^{-iδτÂ}
+to the classical Euler update.
 
 IMPORTANT: This Hamiltonian is *fit per-step* to reproduce the classical
 forward-Euler result.  It is NOT an independent quantum PDE solver —
 build_evolution_hamiltonian uses the classical RHS internally to define
 the target state.  As a consequence, quantum_exact and shift_euler must
 agree to within the lstsq residual of the Pauli coefficient solve (Eq. 16),
-not to machine precision.  This is intentional: the paper validates the
-quantum pipeline (state-prep → Hamiltonian simulation → measurement) by
-comparing against a known classical trajectory.
+not to machine precision.  This is intentional: the appendix validates
+the quantum pipeline (state-prep → Hamiltonian simulation → measurement)
+by comparing against a known classical trajectory.
 
 The approach:
-1. Compute classical RHS: Δ₀ = -u·∇u + ν∇²u + g  (Euler step)
+1. Compute classical RHS: Δ₀ = -u·∇u + ν∇²u + g  (Euler step, §V.C Eq. 15)
 2. Normalize: delta0 = (u_next_norm - u_norm) / δτ
-3. Decompose into Pauli strings: solve (S^T + S)c = b  (Eq. 16)
+3. Decompose into Pauli strings: solve (S^T + S)c = b  (Appendix A.A Eq. 16)
 4. Build Hamiltonian: Â = Σ c_i P̂_i
-5. Evolution circuit: e^{-iδτÂ}|u⟩  (Eq. 17)
+5. Evolution circuit: e^{-iδτÂ}|u⟩  (Appendix A.A Eq. 17)
 """
 
 import numpy as np
@@ -113,7 +115,7 @@ def diffusion_rhs(
 
 
 # ---------------------------------------------------------------------------
-# Pauli decomposition (Appendix A, Eq. 16)
+# Pauli decomposition (Appendix A.A, Eq. 16)
 # ---------------------------------------------------------------------------
 
 
@@ -137,7 +139,7 @@ def solve_pauli_coefficients(
 ) -> tuple[list[str], np.ndarray]:
     """Solve for Pauli coefficients matching e^{-iδτÂ} to classical RHS.
 
-    From Appendix A, Eq. 16:
+    From Appendix A.A, Eq. 16:
       b_i = i⟨u|P̂_i†|Δ₀⟩ + h.c. = -2·Im(⟨u|P̂_i|Δ₀⟩)
       S_ij = ⟨u|P̂_i†P̂_j|u⟩ = ⟨P̂_i u|P̂_j u⟩  (Paulis are Hermitian)
       (S^T + S)c = b  →  2·Re(S) c = b
@@ -183,7 +185,7 @@ def build_evolution_hamiltonian(
     g: np.ndarray | None = None,
     bc: str = "periodic",
 ) -> SparsePauliOp:
-    """Build Â = Σ c_i P̂_i for one evolution step (Appendix A).
+    """Build Â = Σ c_i P̂_i for one evolution step (Appendix A.A).
 
     Steps:
     1. Compute classical RHS from physical (un-normalized) u

@@ -2,8 +2,7 @@
 
 *Design discussion, 2026-05-25. No code was written; this captures the
 reasoning and the conclusions reached so they can inform later work.
-Companion to [`OVERVIEW-burgers-solver.md`](OVERVIEW-burgers-solver.md)
-(note: that overview is stale — it predates the F11 QLBM methods).*
+Companion to [`OVERVIEW-burgers-solver.md`](OVERVIEW-burgers-solver.md).*
 
 ## Context
 

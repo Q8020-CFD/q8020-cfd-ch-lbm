@@ -1,7 +1,7 @@
 """MPO-derived quantum circuits for spatial differential operators.
 
-Implements the ladder operator approach from Murali et al. AIAA 2026
-(Eqs. 9-12) as quantum circuits:
+Implements the ladder operator approach from Gopalakrishnan Meena et al.
+AIAA-2026 §III.B.2 (Eqs. 9-12) as quantum circuits:
 
 - S+ (increment): |i⟩ → |i+1 mod N⟩  (Eq. 11)
 - S- (decrement): |i⟩ → |i-1 mod N⟩  (Eq. 12, S- = S+†)
