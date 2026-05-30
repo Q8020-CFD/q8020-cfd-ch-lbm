@@ -230,7 +230,7 @@ now builds the same per-step circuit the statevector path builds,
 transpiles, executes on the configured backend, and reconstructs
 `f_post` via `|ψ_out_k| ≈ √(counts[k]/S)` followed by
 `unflatten_distributions`.  `--sign-recovery {none, classical_oracle}`
-both honored; `hadamard_test` deferred to #26.  Per-step metrics gain
+both honored; `hadamard_test` since shipped under #26.  Per-step metrics gain
 `leakage` (mass in the unused `|11⟩` velocity block — noise sensor)
 and `negative_mass` (classical-oracle signal for when sign recovery
 matters).  See SPEC-qlbm-shots-and-sign-recovery.md and OVERVIEW
@@ -426,25 +426,23 @@ phi-side label up to the user.  Classical `cole_hopf` + `--bc
 dirichlet` now runs and can serve as a cross-check against
 `cole_hopf_circuit` at the same BC.
 
-## 26. Hadamard per-bin sign test for `qlbm_circuit` (fast follow to #14)
+## 26. Hadamard per-bin sign test for `qlbm_circuit` (fast follow to #14) — DONE
 
-**Why.** #14 v1 ships `--sign-recovery {none, classical_oracle}` for
-`qlbm_circuit`.  `classical_oracle` works but reads signs from a
-classical reference, so the run is no longer a stand-alone benchmark.
-For shock-regime / non-positive-f cases the only stand-alone signal
-recovery is interferometric: per-bin Hadamard test.
-
-**Scope.** ~250 LOC, mirrors
-`burgers_cole_hopf_circuit.py:1597–1851` (`hadamard_per_bin_circuit`,
-`extract_hadamard_per_bin_amplitudes`, `_run_shots_hadamard_per_bin`).
-Adds one ancilla, two applications of `U_step` per bin in
-superposition with a reference prep; sign is `sign(Re(⟨k|U_step|ψ_in⟩))`.
-Cost: `O(4N)` extra circuit executions per step on top of the
-direct shots path.
-
-**Depends on.** #14 v1 (the no-/classical_oracle path) shipped so
-the dispatch already exists; flip `NotImplementedError` to the real
-implementation.
+Shipped.  `--sign-recovery hadamard_test` is now a stand-alone
+(non-hybrid) sign-recovery mode for `qlbm_circuit`.  New helper
+`_qlbm_hadamard_signs` in `burgers_qlbm_circuit.py` runs a per-bin
+Hadamard test (one ancilla, controlled `X_k · U_step · prep(ψ_in)`)
+that estimates `Re(⟨k|U_step|ψ_in⟩)` for each of the `4N` basis
+indices.  Every QLBM operator (collision Householder + real streaming
+permutation) is real, so that real part *is* `ψ_out_k`; its sign is
+the recovered sign and is combined with the direct magnitude
+`√(counts[k]/S)`.  Unlike `classical_oracle` the signs come from the
+circuit itself, keeping the run a stand-alone benchmark.  Cost is
+`O(4N)` extra circuit executions per step; per-step metric
+`hadamard_p_kept` reports the mean post-selection acceptance.  Mirrors
+`burgers_cole_hopf_circuit.hadamard_per_bin_circuit`.  Verified at
+`q=3` against the statevector path (exact agreement at 2e5 shots).
+See OVERVIEW §5.2.
 
 ## 27. Itani-style pure-quantum QLBM (QALB)
 

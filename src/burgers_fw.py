@@ -332,6 +332,8 @@ class QLBMCircuitIntegrator(_DelegatingIntegrator):
             shots=config.shots,
             backend=self.backend,
             sign_recovery=config.sign_recovery,
+            optimization_level=config.optimization_level,
+            seed=config.seed,
         )
 
 

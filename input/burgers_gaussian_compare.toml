@@ -37,14 +37,30 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--nu" = 1e-2
 "--cfl" = 0.1
 "--shock-pct" = 100.0
-"--bc" = "periodic"
+# Dirichlet for ALL methods.  cole_hopf needs it (the phi-equation is
+# Neumann-on-phi, the dual of u-Dirichlet; periodic phi is wrong since
+# the gaussian has nonzero mean so phi=exp(-int u/2nu) is not periodic).
+# The gaussian decays to ~0 at the walls, so shift/lbm/qlbm are
+# unaffected and all methods share one grid/timeline (n_steps=98).
+"--bc" = "dirichlet"
 "--ic" = "gaussian"
 "--ic-amplitude" = 0.4
 "--ic-center" = 0.5
 "--ic-sigma" = 0.1
 "--source" = "none"
-"--shots" = 10000
-"--save-every" = 1
+# 150k shots: the gaussian-derived Cole-Hopf phi has ~35x dynamic range,
+# so at 10k shots ~5 of 32 bins drew zero counts -> phi=0 -> the
+# log-derivative phi->u blew up to |u|~22.  At >=1e5 shots the tail is
+# resolved and |u| recovers to ~1.1.  See FUTURE-WORK #10.
+"--shots" = 150000
+# save-every is global so every method snapshots on the SAME steps
+# (0, 7, ..., 98).  plot_method_compare intersects step keys across
+# methods, so a uniform cadence keeps the full ~15-frame animation
+# instead of collapsing to the coarsest method's grid.  It must equal
+# (or be a multiple of) the cole_hopf_circuit chunk_size (7) below,
+# since chunked mode can only snapshot on chunk boundaries.  n_steps=98
+# under Dirichlet, and 7 divides 98 (14 chunks).
+"--save-every" = 7
 
 # ── Classical references ─────────────────────────────────────────────
 # Both run with the same globals; results overlay onto the animation
@@ -60,41 +76,40 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 # qlbm_circuit:   Option A, hybrid (classical f_post shadow → Householder
 #                 dilation → unitary playback).  Statevector mode here;
 #                 swap --shots > 0 to exercise the new shots path.
-# cole_hopf_circuit (lcu): pure-quantum Pathway 2.  LCU propagator picked
-#                 for periodic-BC scaling headroom; qft-diagonal would also
-#                 work at q=5 with similar accuracy.
+# cole_hopf_circuit (dense-block): pure-quantum Pathway 2 in shots mode.
+#                 phi >= 0 by construction, so direct readout already has
+#                 correct signs -- no sign recovery needed (cf. qlbm).
 
 [gauss_qlbm_circuit_q5]
 "--method" = "qlbm_circuit"
+# Stand-alone interferometric sign recovery (per-bin Hadamard test).
+# Needed because the LBM distributions f can go negative once the pulse
+# steepens, and direct sqrt(counts) readout only recovers |f|.
+"--sign-recovery" = "hadamard_test"
 
 [gauss_cole_hopf_circuit_q5]
 "--method" = "cole_hopf_circuit"
-"--propagator" = "lcu"
-# Shots > 0 with save-every=1 in single-evolution mode rebuilds an
-# independent transpiled circuit per snapshot, with step n carrying n
-# inlined LCU layers -- the full batch then sits in transpiler memory
-# and OOMs around step ~36 on a typical workstation.  Chunked mode
-# emits one short circuit per chunk_size steps, decoding/re-encoding
-# amplitudes (via MPS prep) between chunks.  See OVERVIEW §4.3.7 and
-# SPEC-chunked-evolution.md.
+# dense-block (exact eigendecomposition, valid q<=5) is the shots
+# propagator used by the paper-scale 150k runs.  LCU is NOT used for
+# shots here: its per-step ancilla resets defeat Aer's shot-sampling
+# optimisation (~27 ms/shot -> ~19 h at 150k), whereas dense-block
+# transpiles to basis gates (~2 ms/shot, ~5 min/chunk at 150k).
+"--propagator" = "dense-block"
+# No --phi-modes: low-passing the SHARP gaussian phi rings (Gibbs) and
+# can drive phi < 0 -> log-derivative blow-up.  The phi-tail is instead
+# resolved by the global 150k shots (validated non-divergent; at 50k it
+# blows up to |u|~22).  See FUTURE-WORK #10.
 #
-# Chunked-mode constraints:
-#   1. n_steps must be divisible by chunk_size.  For this case
-#      (gaussian IC, q=5, cfl=0.1, shock_pct=100.0) n_steps=102, so
-#      chunk_size must divide 102 (1, 2, 3, 6, 17, 34, 51, 102).
-#   2. save_every must be a multiple of chunk_size (snapshots can
-#      only land on chunk boundaries).
-# chunk_size=6, save_every=6 → 17 chunks, 17 snapshots, ~2 s at 8 fps.
-# The other methods keep save_every=1 (102 frames); plot_method_compare
-# intersects step keys across methods, so the animation ends up at 17
-# frames overall -- the cole_hopf_circuit sampling rate is the limit.
+# Chunked evolution bounds per-circuit depth.  n_steps=98 under the
+# global Dirichlet BC (98 = 2*7*7), so chunk_size must divide 98;
+# chunk_size=7 with the global save-every=7 -> 14 chunks, 15 shared
+# snapshots (steps 0,7,...,98), keeping the full ~15-frame animation.
 "--evolution-mode" = "chunked"
-"--chunk-size" = 6
-"--save-every" = 6
+"--chunk-size" = 7
 
 # ── Postproc ─────────────────────────────────────────────────────────
 # plot_method_compare.py harvests all four cases above plus computes a
 # Godunov reference from the IC at runtime.  Output: method_compare.gif
 # in the sweep run dir.
 
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py"]

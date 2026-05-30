@@ -838,7 +838,12 @@ cross-comparison tool, parallel to how `quantum_circuit` exists as
 the hybrid baseline for Pathway 1.
 
 **Shots are real, not a fallback.** Statevector and shots both
-execute the same `build_qlbm_step_circuit` output.  Reconstruction:
+execute the same `build_qlbm_step_circuit` output.  The shots path
+routes through the shared `q8020_cfd_qutil.circuit.transpile_circuit`
+and `execute_circuit_counts` helpers (same execution layer as
+`cole_hopf_circuit`'s shots paths) so `--optimization-level`,
+`--seed`, and `--backend-type {sim,hardware}` are honoured uniformly
+across both methods.  Reconstruction:
 `|ψ_out_k| ≈ √(counts[k]/S)`, unflatten to `f_post`, rescale by
 `cumulative_norm`.  Three sign-recovery modes are wired through
 `--sign-recovery` (mirroring §3.3.4 for `quantum_circuit`):
@@ -851,8 +856,19 @@ execute the same `build_qlbm_step_circuit` output.  Reconstruction:
   `collide_bgk + stream` step.  Diagnostic grade: the *signs* now
   come from a classical reference, so this branch is doubly hybrid;
   use for shock-regime debugging, not as a stand-alone benchmark.
-- `hadamard_test` — deferred (FUTURE-WORK #26).  Raises
-  `NotImplementedError`.
+- `hadamard_test` — stand-alone interferometric sign recovery.  For
+  each bin `k` a per-bin Hadamard test estimates
+  `Re(⟨k|U_step|ψ_in⟩)`; since every QLBM operator (collision
+  Householder + real streaming permutation) is real, that real part
+  *is* `ψ_out_k`, so its sign is the recovered sign and is combined
+  with the direct magnitude `√(counts[k]/S)`.  Unlike
+  `classical_oracle` the signs come from the circuit itself, not a
+  classical reference, so the run stays a stand-alone benchmark.
+  Cost: `O(4N)` extra circuit executions per step (`_qlbm_hadamard_signs`,
+  mirroring `burgers_cole_hopf_circuit.hadamard_per_bin_circuit`);
+  per-step metric `hadamard_p_kept` reports the mean post-selection
+  acceptance.  Diagnostic grade — for shock-regime deep dives, not
+  production sweeps.
 
 **Leakage diagnostic.** The velocity register has 4 states but D1Q3
 only uses 3 (`|11⟩` is unused).  Per-step metric `leakage` reports
@@ -1118,10 +1134,23 @@ For the three quantum-circuit methods that shoot at a backend
 stored on the integrator instance. `cole_hopf_circuit` builds its
 backend lazily inside the integrator's `_run_all` because it may not be
 needed (`shots=0` path is statevector-only). `qlbm_circuit` consumes
-the backend in the shots path: every step's circuit is transpiled and
-executed on the configured backend, with counts reconstructed back to
-`f` (see §5.2).  In statevector mode the backend is unused and the
-step is simulated via `Statevector.evolve`.
+the backend in the shots path: every step's circuit is transpiled via
+`q8020_cfd_qutil.circuit.transpile_circuit` and executed via
+`execute_circuit_counts` (the same shared helpers
+`cole_hopf_circuit`'s shots paths use — `burgers_cole_hopf_circuit.py:
+1182, 1187`), with counts reconstructed back to `f` (see §5.2).  In
+statevector mode the backend is unused and the step is simulated via
+`Statevector.evolve`.
+
+The shared `qutil` execution layer means **all real-circuit shots
+paths** (`quantum_circuit` per-step, `cole_hopf_circuit` batched or
+chunked, `qlbm_circuit` per-step) honour the same flag contract:
+`--shots`, `--seed`, `--optimization-level`, and `--backend-type
+{sim,hardware}` produce comparable behaviour across methods.
+`execute_circuit_counts` transparently dispatches to `backend.run`
+for Aer and to `SamplerV2` for IBM-runtime backends, so methods
+transition from simulator to hardware without per-method
+code changes.
 
 ---
 

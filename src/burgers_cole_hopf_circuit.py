@@ -1640,7 +1640,11 @@ def hadamard_per_bin_circuit(
 
     qc = QuantumCircuit(n_total, n_total)
     qc.h(test)
-    controlled = inner.to_gate().control(1)
+    # annotated=True defers control synthesis: Qiskit's eager
+    # controlled-UCGate decomposition (_dec_ucg) trips a strict unitary
+    # check on the MPS-prep / block-encoded sub-gates, whereas Aer can
+    # simulate the annotated controlled operation directly.
+    controlled = inner.to_gate().control(1, annotated=True)
     qc.append(controlled, [test] + list(range(n_inner)))
     qc.h(test)
     qc.measure(list(range(n_total)), list(range(n_total)))
@@ -1776,10 +1780,15 @@ def _run_shots_hadamard_per_bin(
 
     for s in snap_steps:
         t_build = time.time()
-        evo_qc, n_anc_evo = _build_evolution_qc_unitary(
+        evo_qc, _n_anc_per_step = _build_evolution_qc_unitary(
             q, nu, dt, s, L_box, bc, propagator,
             encoding, source_fn, x, taylor_order,
         )
+        # _build_evolution_qc_unitary uses a fresh ancilla register per
+        # step, so the circuit carries s * per_step ancillas.  The
+        # Hadamard wrapper and the post-selection extractor need the
+        # TOTAL ancilla count (all must end in |0>), not the per-step one.
+        n_anc_evo = evo_qc.num_qubits - q
         print(
             f"[_run_shots_hadamard_per_bin] snap_step={s} "
             f"q={q} n_bond={n_bond} n_anc_evo={n_anc_evo} "
@@ -1803,6 +1812,11 @@ def _run_shots_hadamard_per_bin(
         t_info_list: list[dict[str, Any]] = []
         exec_info_list: list[dict[str, Any]] = []
         t_run = time.time()
+        # NB: do NOT skip transpile here even on Aer+LCU.  The Hadamard
+        # wrapper uses an annotated controlled gate (control synthesis is
+        # deferred to avoid the UCGate unitary-check failure); Aer cannot
+        # assemble a raw AnnotatedOperation, so transpilation is required
+        # to lower it into concrete gates.
         for k, qc_k in enumerate(per_k_circs):
             qc_t, t_info = transpile_circuit(
                 qc_k, backend,

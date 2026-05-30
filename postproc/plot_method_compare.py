@@ -206,43 +206,58 @@ def main() -> None:
     )
     frames_ref = [sols_godunov[int(k)] for k in step_keys_common]
 
-    # Truncate at divergence
+    # Per-method divergence masking.  A single diverged method must not
+    # collapse the whole animation: instead of globally truncating at the
+    # first bad step (which leaves one frame if any method blows up at its
+    # first snapshot), mask each method independently.  From its first
+    # non-finite / over-amplitude frame on, that method's curve is set to
+    # NaN (so its line simply vanishes) while every healthy method keeps
+    # animating over the full common step range.
     amp0 = max(np.max(np.abs(u0)), 1.0)
     amp_limit = 10.0 * amp0
-    valid_end = len(step_keys_common)
-    for i in range(len(step_keys_common)):
-        for m in frames:
-            f = frames[m][i]
-            if not np.all(np.isfinite(f)):
-                valid_end = i
-                break
-            if np.max(np.abs(f)) > amp_limit:
-                valid_end = i
-                break
-        else:
-            continue
-        break
-    if valid_end == 0:
-        print("No valid frames.", file=sys.stderr)
-        sys.exit(1)
-    step_keys_common = step_keys_common[:valid_end]
+    n_common = len(step_keys_common)
+    nan_frame = np.full_like(np.asarray(u0, dtype=float), np.nan)
+    diverged: dict[str, int] = {}
     for m in frames:
-        frames[m] = frames[m][:valid_end]
-    frames_ref = frames_ref[:valid_end]
+        for i in range(n_common):
+            f = frames[m][i]
+            if (not np.all(np.isfinite(f))) or np.max(np.abs(f)) > amp_limit:
+                for j in range(i, n_common):
+                    frames[m][j] = nan_frame.copy()
+                diverged[m] = int(step_keys_common[i])
+                break
+    for m, step in diverged.items():
+        print(
+            f"  {m}: diverged at step {step} "
+            f"(|u| > {amp_limit:.1f}); masked from there on",
+            file=sys.stderr,
+        )
+    if all(diverged.get(m, n_common) == 0 for m in frames):
+        print(
+            "All methods diverged at the first step; nothing to animate.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # Build animation
-    all_vals = [np.abs(np.array(fs)) for fs in frames.values()]
-    all_vals.append(np.abs(np.array(frames_ref)))
-    ymax = max(np.max(v) for v in all_vals) * 1.15
+    # Build animation.  ymax is taken over finite values only so a brief
+    # over-amplitude excursion (now masked) cannot blow up the y-scale.
+    finite_maxes = []
+    for fs in list(frames.values()) + [frames_ref]:
+        arr = np.abs(np.asarray(fs, dtype=float))
+        arr = arr[np.isfinite(arr)]
+        if arr.size:
+            finite_maxes.append(float(arr.max()))
+    ymax = (max(finite_maxes) if finite_maxes else 1.0) * 1.15
     times = np.array([int(k) * dt for k in step_keys_common])
 
     fig, (ax_u, ax_err) = plt.subplots(
         2, 1, figsize=(10, 6.5),
         gridspec_kw={"height_ratios": [3, 1]},
     )
+    ic_name = anchor_meta.get('ic', '?')
     fig.suptitle(
         f"Method Comparison: q={q_val} (N={2**int(q_val)}), "
-        f"$\\nu$={nu:.0e}, {bc}, sine IC",
+        f"$\\nu$={nu:.0e}, {bc}, {ic_name} IC",
         fontsize=12, fontweight="bold",
     )
 
@@ -262,9 +277,12 @@ def main() -> None:
     for m, sty in METHOD_STYLE.items():
         if m not in frames:
             continue
+        label = sty['label']
+        if m in diverged:
+            label += f" (diverged @ step {diverged[m]})"
         ln, = ax_u.plot(
             [], [], ls=sty['ls'], color=sty['color'],
-            lw=sty['lw'], label=sty['label'],
+            lw=sty['lw'], label=label,
         )
         lines[m] = ln
 
@@ -281,12 +299,13 @@ def main() -> None:
         sty = METHOD_STYLE.get(m)
         if sty is None:
             continue
-        err = np.zeros(len(step_keys_common))
+        err = np.full(len(step_keys_common), np.nan)
         for i in range(len(step_keys_common)):
+            fm = frames[m][i]
             norm_ref = np.linalg.norm(frames_ref[i])
-            if norm_ref > 1e-15:
+            if np.all(np.isfinite(fm)) and norm_ref > 1e-15:
                 err[i] = np.linalg.norm(
-                    frames[m][i] - frames_ref[i],
+                    fm - frames_ref[i],
                 ) / norm_ref
         errors[m] = err
         ln, = ax_err.plot(
@@ -297,7 +316,7 @@ def main() -> None:
 
     ax_err.set_xlim(times[0], times[-1])
     all_errs = np.concatenate(
-        [e[e > 0] for e in errors.values()]
+        [e[np.isfinite(e) & (e > 0)] for e in errors.values()]
     ) if errors else np.array([1e-6])
     if all_errs.size == 0:
         all_errs = np.array([1e-6])

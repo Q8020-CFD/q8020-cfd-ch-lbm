@@ -195,6 +195,114 @@ def build_qlbm_step_circuit(
     return qc, contraction
 
 
+# ── Hadamard-test sign recovery (FUTURE-WORK #26) ─────────────────────
+
+
+def _qlbm_hadamard_signs(
+    psi_in: np.ndarray,
+    qc_step: QuantumCircuit,
+    n_qubits: int,
+    shots: int,
+    backend: Any,
+    q: int,
+    optimization_level: int = 1,
+    seed: int | None = None,
+    mag: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Per-bin Hadamard-test sign recovery for the QLBM shots path.
+
+    For each basis index k in [0, 4N) it runs a Hadamard test that
+    estimates Re(<k| U_step |psi_in>).  Every QLBM operator (the
+    collision Householder reflection and the real streaming
+    permutation) is real, so psi_out[k] is real and its sign is
+    exactly sign(Re(<k| U_step |psi_in>)).  This is a stand-alone
+    (non-hybrid) signal, unlike classical_oracle.
+
+    The controlled gate is materialised as a single dense
+    ``block_diag(I, X_k . U_step . P)`` ``UnitaryGate`` so Aer can
+    simulate it natively (no per-bin transpilation of a controlled
+    composite, which is ~10x faster).  ``P`` is the Householder prep
+    with ``P|0> = psi_in``; ``X_k`` is the bit-flip selector, applied
+    as a cheap XOR row permutation of the base matrix.  Sim-only by
+    construction (dense 2^(n_qubits+1) gate).
+
+    If ``mag`` (the direct ``|psi_out|`` estimate) is given, bins whose
+    magnitude is negligible are skipped (sign there is irrelevant) and
+    left at +1, roughly halving the circuit count.
+
+    Returns a sign vector in {-1, +1}^{4N} (zeros mapped to +1) plus
+    aggregate diagnostics.
+    """
+    from qiskit.quantum_info import Operator
+
+    from q8020_cfd_qutil.circuit import execute_circuit_counts
+
+    dim = 1 << n_qubits  # 4N
+    test = n_qubits  # ancilla is the last (most significant) qubit
+
+    # base|0> = U_step P|0> = U_step psi_in; row-permuting base by XOR k
+    # realises X_k, so (X_k base)[0, 0] = (U_step psi_in)[k] = psi_out[k].
+    e0 = np.zeros(dim)
+    e0[0] = 1.0
+    P = _unitary_from_state_map(e0, psi_in, dim)
+    U_step = Operator(qc_step).data
+    base = U_step @ P
+    eye = np.eye(dim)
+
+    if mag is not None:
+        thresh = 1e-6 * float(np.max(mag)) if np.max(mag) > 0 else 0.0
+        run_bin = mag > thresh
+    else:
+        run_bin = np.ones(dim, dtype=bool)
+
+    re_psi = np.zeros(dim)
+    n_kept_total = 0
+    n_run = 0
+
+    for k in range(dim):
+        if not run_bin[k]:
+            continue
+        n_run += 1
+        inner_k = base[[i ^ k for i in range(dim)], :]
+        M = block_diag(eye, inner_k)
+
+        qc_k = QuantumCircuit(n_qubits + 1, n_qubits + 1)
+        qc_k.h(test)
+        qc_k.append(UnitaryGate(M), list(range(n_qubits)) + [test])
+        qc_k.h(test)
+        qc_k.measure(range(n_qubits + 1), range(n_qubits + 1))
+
+        # Aer simulates the dense UnitaryGate directly; no transpile.
+        counts, _ = execute_circuit_counts(
+            qc_k, backend, shots=shots, seed=seed,
+        )
+
+        n0 = 0
+        n1 = 0
+        for bitstr, cnt in counts.items():
+            # MSB-first: bits[0] is the test (highest) qubit; the
+            # remaining n_qubits chars are the data register.
+            bits = bitstr.replace(" ", "")
+            if any(c != "0" for c in bits[-n_qubits:]):
+                continue
+            if bits[0] == "0":
+                n0 += cnt
+            else:
+                n1 += cnt
+        re_psi[k] = (n0 - n1) / max(shots, 1)
+        n_kept_total += n0 + n1
+
+    signs = np.sign(re_psi)
+    signs[signs == 0] = 1.0
+    info = {
+        "p_kept_per_bin_mean": (
+            n_kept_total / (n_run * max(shots, 1)) if n_run else 0.0
+        ),
+        "n_bins_run": n_run,
+    }
+    return signs, info
+
+
 # ── Statevector simulation driver ─────────────────────────────────────
 
 
@@ -209,6 +317,8 @@ def run_qlbm_circuit_simulation(
     shots: int = 0,
     backend: Any = None,
     sign_recovery: str = "none",
+    optimization_level: int = 1,
+    seed: int | None = None,
 ) -> tuple[list[np.ndarray], list[dict]]:
     """Run QLBM circuit simulation (statevector or shots).
 
@@ -222,8 +332,10 @@ def run_qlbm_circuit_simulation(
       "classical_oracle" -- copy signs from a parallel classical
                             collide_bgk + stream step; diagnostic-grade
                             (run is hybrid in the recovery branch).
-      "hadamard_test"    -- NotImplementedError (deferred to
-                            FUTURE-WORK #26: per-bin Hadamard test).
+      "hadamard_test"    -- stand-alone interferometric sign recovery:
+                            per-bin Hadamard test estimates
+                            sign(Re(<k|U_step|psi_in>)).  Costs 4N extra
+                            circuits per step; diagnostic-grade.
 
     Returns all steps (solutions[i] = u at step i, length n_steps+1).
     """
@@ -257,6 +369,7 @@ def run_qlbm_circuit_simulation(
         t0 = time.time()
         leakage: float | None = None
         neg_mass: float | None = None
+        had_p_kept: float | None = None
 
         if shots == 0:
             # Statevector path: build circuit, simulate
@@ -288,13 +401,6 @@ def run_qlbm_circuit_simulation(
         else:
             # Shots path: real circuit + measurement + reconstruction.
             # See SPEC-qlbm-shots-and-sign-recovery.md §2-§3.
-            if sign_recovery == "hadamard_test":
-                raise NotImplementedError(
-                    "--sign-recovery hadamard_test for qlbm_circuit is "
-                    "deferred to FUTURE-WORK #26.  v1 supports "
-                    "{none, classical_oracle}."
-                )
-
             vec_in = flatten_distributions(f)
             norm_in = float(np.linalg.norm(vec_in))
             if norm_in < 1e-15:
@@ -325,27 +431,40 @@ def run_qlbm_circuit_simulation(
                     from qiskit_aer import AerSimulator
                     backend_eff = AerSimulator()
 
-                from qiskit.compiler import transpile as _transpile
+                # Use the shared qutil transpile + execute helpers so
+                # QLBM and cole_hopf shots paths honour the same
+                # --optimization-level / --seed contract, and so
+                # hardware backends flow through SamplerV2 consistently.
+                from q8020_cfd_qutil.circuit import (
+                    execute_circuit_counts,
+                    transpile_circuit,
+                )
 
-                qc_full = QuantumCircuit(n_qubits, n_qubits)
+                # No explicit classical register: measure_all() adds its
+                # own n_qubits-bit register.  Declaring one here too would
+                # produce a 2*n_qubits-bit string ([measured | empty]), so
+                # int(bitstr, 2) = measured << n_qubits >= dim and every
+                # count gets dropped -> zero mass.
+                qc_full = QuantumCircuit(n_qubits)
                 qc_full.initialize(psi_in.tolist(), range(n_qubits))
                 qc_full.compose(qc, inplace=True)
                 qc_full.measure_all()
-                qc_t = _transpile(
-                    qc_full, backend_eff, optimization_level=1,
+                qc_t, _ = transpile_circuit(
+                    qc_full, backend_eff,
+                    optimization_level=optimization_level,
+                    seed_transpiler=seed,
                 )
-                counts = (
-                    backend_eff.run(qc_t, shots=shots)
-                    .result()
-                    .get_counts()
+                counts, _ = execute_circuit_counts(
+                    qc_t, backend_eff, shots=shots, seed=seed,
                 )
 
                 psi_out_mag = np.zeros(dim)
                 for bitstr, cnt in counts.items():
-                    # Qiskit measure_all bitstrings: low-index qubit on
-                    # the right.  int(bitstr, 2) matches Statevector
+                    # execute_circuit_counts strips inter-register
+                    # spaces, so the bitstring is a single MSB-first
+                    # token; int(bitstr, 2) matches Statevector
                     # indexing used by the statevector branch above.
-                    idx = int(bitstr.replace(" ", ""), 2)
+                    idx = int(bitstr, 2)
                     if idx < dim:
                         psi_out_mag[idx] = np.sqrt(cnt / shots)
 
@@ -359,6 +478,14 @@ def run_qlbm_circuit_simulation(
                 if sign_recovery == "classical_oracle":
                     signs = np.sign(vec_ref)
                     signs[signs == 0] = 1.0
+                    psi_out = signs * psi_out_mag
+                elif sign_recovery == "hadamard_test":
+                    signs, had_info = _qlbm_hadamard_signs(
+                        psi_in, qc, n_qubits, shots, backend_eff, q,
+                        optimization_level=optimization_level,
+                        seed=seed, mag=psi_out_mag,
+                    )
+                    had_p_kept = had_info["p_kept_per_bin_mean"]
                     psi_out = signs * psi_out_mag
                 else:
                     psi_out = psi_out_mag
@@ -395,6 +522,8 @@ def run_qlbm_circuit_simulation(
             step_met["leakage"] = leakage
             step_met["negative_mass"] = neg_mass
             step_met["sign_recovery"] = sign_recovery
+            if had_p_kept is not None:
+                step_met["hadamard_p_kept"] = had_p_kept
         metrics.append(step_met)
         lbm_solutions.append(u_cur.copy())
 
