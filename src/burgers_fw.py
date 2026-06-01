@@ -68,6 +68,7 @@ class BurgersConfig(SolverConfig):
     encoding: str = "binary"
     evolution_mode: str = "single"
     segment_size: int = 10
+    metric_transpile_timeout: float = 60.0
     phi_modes: int = 0
     taylor_order: int = 4
     readout: str = "direct"
@@ -342,6 +343,7 @@ class QLBMCircuitIntegrator(_DelegatingIntegrator):
             sign_recovery=config.sign_recovery,
             optimization_level=config.optimization_level,
             seed=config.seed,
+            metric_transpile_timeout=config.metric_transpile_timeout,
         )
 
 
@@ -386,6 +388,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
             phi_modes=config.phi_modes,
             taylor_order=config.taylor_order,
             readout=getattr(config, "readout", "direct"),
+            metric_transpile_timeout=config.metric_transpile_timeout,
         )
 
 

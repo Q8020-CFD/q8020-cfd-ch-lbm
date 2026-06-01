@@ -1051,6 +1051,7 @@ def _run_shots_measure_reprepare(
     x: np.ndarray | None = None,
     taylor_order: int = 4,
     use_mps_prep: bool = True,
+    metric_transpile_timeout: float = 60.0,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Measure-and-reprepare (segmented) evolution: K segments of segment_size steps each.
 
@@ -1083,6 +1084,9 @@ def _run_shots_measure_reprepare(
     psi_current, init_norm = normalize_state(psi0)
     cumulative_norm = init_norm * phi_norm
     snapshots: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
+    # Cache for out-of-process hardware-cost stats on the skip-transpile
+    # (Aer+LCU) path; unforced segments are identical so we compute once.
+    metric_stats_cache = None
 
     print(
         f"[_run_shots_measure_reprepare] n_segments={n_segments} "
@@ -1147,6 +1151,9 @@ def _run_shots_measure_reprepare(
         # Compose drops source metadata; carry forward (LCU lambda).
         if full_qc.metadata:
             raw_qc.metadata = dict(full_qc.metadata)
+        # Construction wall time for this segment (prep + propagator
+        # build + compose), measured from the segment start.
+        construct_t = time.time() - t_segment
 
         # 4. Transpile + execute
         #    AerSimulator handles arbitrary gates (ControlledGate,
@@ -1171,6 +1178,7 @@ def _run_shots_measure_reprepare(
             f"{' (skip transpile — Aer+LCU)' if _skip_transpile else ' transpiling'} ...",
             file=sys.stderr, flush=True,
         )
+        skip_stats = None
         if _skip_transpile:
             qc_t = raw_qc
             t_info = {
@@ -1178,6 +1186,26 @@ def _run_shots_measure_reprepare(
                 "optimization_level": optimization_level,
                 "skipped": "AerSimulator+LCU",
             }
+            # Execution skips transpile (Aer runs the raw circuit), but we
+            # still want hardware-cost depth/gate stats.  Get them
+            # out-of-process so the known qs_decomposition segfault on the
+            # LCU SELECT gates degrades gracefully instead of killing the
+            # run.  Unforced segments are identical -> compute once.
+            if metric_stats_cache is None or source_fn is not None:
+                from q8020_cfd_qutil.circuit import (
+                    DEFAULT_METRIC_BASIS,
+                    safe_circuit_stats_in_basis,
+                )
+                # Short, single-attempt budget: metrics must never stall
+                # the run.  If LCU's SELECT-gate synthesis can't finish in
+                # time it records unavailable and the run proceeds.
+                metric_stats_cache = safe_circuit_stats_in_basis(
+                    raw_qc, DEFAULT_METRIC_BASIS,
+                    optimization_level=optimization_level,
+                    seed_transpiler=seed,
+                    timeout=metric_transpile_timeout, try_decompose=False,
+                )
+            skip_stats = metric_stats_cache
         else:
             qc_t, t_info = transpile_circuit(
                 raw_qc, backend,
@@ -1237,7 +1265,24 @@ def _run_shots_measure_reprepare(
                 "cumulative_norm": cumulative_norm,
                 "transpile": t_info,
                 "execute": exec_info,
+                # Wall-time split for rollup (construct / transpile /
+                # execute) for this segment.
+                "circuit_construction_time_s": construct_t,
+                "transpilation_time_s": t_info.get("wall_time", 0.0),
+                "execution_time_s": exec_info.get("wall_time", 0.0),
+                "n_circuits": 1,
             }
+            # On the skip path, attach the out-of-process hardware-cost
+            # stats (flat keys the postproc rolls up); otherwise the
+            # in-process transpile.after already carries them.
+            if skip_stats is not None and skip_stats.get("available"):
+                met["circuit_depth"] = skip_stats["depth"]
+                met["gate_counts"] = skip_stats["gate_counts"]
+                met["n_qubits"] = skip_stats["num_qubits"]
+                met["circuit_metrics_available"] = True
+            elif skip_stats is not None:
+                met["circuit_metrics_available"] = False
+                met["circuit_metrics_reason"] = skip_stats.get("reason")
             if raw_qc.metadata and "lcu_lambda" in raw_qc.metadata:
                 met["lcu_lambda"] = raw_qc.metadata["lcu_lambda"]
             snapshots[step_at_end] = (phi_out, met)
@@ -1276,6 +1321,7 @@ def _run_shots_batch(
     x: np.ndarray | None = None,
     taylor_order: int = 4,
     use_mps_prep: bool = True,
+    metric_transpile_timeout: float = 60.0,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Batch shots readout per spec §7 (P-C optimised).
 
@@ -1325,8 +1371,10 @@ def _run_shots_batch(
     )
     t_build_start = time.time()
     raw_circs: list[QuantumCircuit] = []
+    construct_times: list[float] = []
     total_q = None
     for s in snap_steps:
+        t_cc = time.time()
         if propagator == "qft-diagonal":
             full_qc = heat_qft_full_circuit(
                 q, nu, dt * s, s, L_box, bc=bc,
@@ -1357,6 +1405,7 @@ def _run_shots_batch(
         if full_qc.metadata:
             raw_qc.metadata = dict(full_qc.metadata)
         raw_circs.append(raw_qc)
+        construct_times.append(time.time() - t_cc)
     print(
         f"[_run_shots_batch] built {len(raw_circs)} circuit(s) in "
         f"{time.time() - t_build_start:.1f}s "
@@ -1411,6 +1460,7 @@ def _run_shots_batch(
     except ImportError:
         _skip_transpile = False
 
+    transpile_wall = 0.0
     if _skip_transpile:
         qc_t_list: list[QuantumCircuit] = list(raw_circs)
         t_info_list: list[dict[str, Any]] = [
@@ -1467,6 +1517,13 @@ def _run_shots_batch(
         )
 
     # --- Execute each transpiled circuit -------------------------------
+    # The batched transpile is a single call for all circuits, so split
+    # its wall time evenly across them for an honest per-iteration rollup
+    # (summing the nested transpile.wall_time would N-times overcount).
+    transpile_per = transpile_wall / max(1, len(raw_circs))
+    # Single-attempt cache for skip-path (LCU) hardware-cost stats so the
+    # metric transpile is tried at most once and can never stall the run.
+    skip_metric_cache = None
     results: list[tuple[np.ndarray, dict[str, Any]]] = []
     for idx, (raw_qc, qc_t, t_info, s) in enumerate(zip(
         raw_circs, qc_t_list, t_info_list, snap_steps,
@@ -1510,7 +1567,37 @@ def _run_shots_batch(
             "step": s,
             "transpile": t_info,
             "execute": exec_info,
+            # Wall-time split for rollup.  transpile is the batched call
+            # amortized per circuit (see transpile_per above).
+            "circuit_construction_time_s": construct_times[idx],
+            "transpilation_time_s": transpile_per,
+            "execution_time_s": exec_info.get("wall_time", 0.0),
+            "n_circuits": 1,
         }
+        # Skip path (Aer+LCU): execution ran the raw circuit, so grab
+        # hardware-cost stats out-of-process (crash-safe).  Non-skip
+        # circuits already carry stats via transpile.after.
+        if _skip_transpile:
+            if skip_metric_cache is None:
+                from q8020_cfd_qutil.circuit import (
+                    DEFAULT_METRIC_BASIS,
+                    safe_circuit_stats_in_basis,
+                )
+                skip_metric_cache = safe_circuit_stats_in_basis(
+                    raw_qc, DEFAULT_METRIC_BASIS,
+                    optimization_level=optimization_level,
+                    seed_transpiler=seed,
+                    timeout=metric_transpile_timeout, try_decompose=False,
+                )
+            bs = skip_metric_cache
+            if bs.get("available"):
+                met["circuit_depth"] = bs["depth"]
+                met["gate_counts"] = bs["gate_counts"]
+                met["n_qubits"] = bs["num_qubits"]
+                met["circuit_metrics_available"] = True
+            else:
+                met["circuit_metrics_available"] = False
+                met["circuit_metrics_reason"] = bs.get("reason")
         # Surface LCU normalization when the propagator is LCU.
         if raw_qc.metadata and "lcu_lambda" in raw_qc.metadata:
             met["lcu_lambda"] = raw_qc.metadata["lcu_lambda"]
@@ -1735,6 +1822,7 @@ def _run_shots_hadamard_per_bin(
     x: np.ndarray | None = None,
     taylor_order: int = 4,
     use_mps_prep: bool = True,
+    metric_transpile_timeout: float = 60.0,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Hadamard-test-per-bin readout driver (F10-12).
 
@@ -1886,6 +1974,7 @@ def run_cole_hopf_circuit_simulation(
     taylor_order: int = 4,
     use_mps_prep: bool = True,
     readout: str = "direct",
+    metric_transpile_timeout: float = 60.0,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
 
@@ -2049,6 +2138,7 @@ def run_cole_hopf_circuit_simulation(
                 source_fn=source_fn, x=x,
                 taylor_order=taylor_order,
                 use_mps_prep=use_mps_prep,
+                metric_transpile_timeout=metric_transpile_timeout,
             )
         else:
             batch_results = _run_shots_batch(
@@ -2064,6 +2154,7 @@ def run_cole_hopf_circuit_simulation(
                 source_fn=source_fn, x=x,
                 taylor_order=taylor_order,
                 use_mps_prep=use_mps_prep,
+                metric_transpile_timeout=metric_transpile_timeout,
             )
 
         for (phi_hat, met), s in zip(batch_results, snap_steps):

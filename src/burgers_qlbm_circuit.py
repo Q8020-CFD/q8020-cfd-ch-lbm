@@ -242,7 +242,10 @@ def _qlbm_hadamard_signs(
     """
     from qiskit.quantum_info import Operator
 
-    from q8020_cfd_qutil.circuit import execute_circuit_counts
+    from q8020_cfd_qutil.circuit import (
+        circuit_stats_in_basis,
+        execute_circuit_counts,
+    )
 
     dim = 1 << n_qubits  # 4N
     test = n_qubits  # ancilla is the last (most significant) qubit
@@ -265,6 +268,8 @@ def _qlbm_hadamard_signs(
     re_psi = np.zeros(dim)
     n_kept_total = 0
     n_run = 0
+    stat_depth: int | None = None
+    stat_gates: dict | None = None
 
     for k in range(dim):
         if not run_bin[k]:
@@ -278,6 +283,21 @@ def _qlbm_hadamard_signs(
         qc_k.append(UnitaryGate(M), list(range(n_qubits)) + [test])
         qc_k.h(test)
         qc_k.measure(range(n_qubits + 1), range(n_qubits + 1))
+
+        # One-time metric-only lowering of the per-bin Hadamard circuit to
+        # a hardware basis (dense UnitaryGate -> cx + 1-qubit gates), for
+        # honest depth/gate reporting.  Every bin shares this structure --
+        # the dense gate's decomposition cost is fixed by its dimension,
+        # not its entries -- so one representative covers all n_bins_run.
+        # Does not affect execution (Aer simulates the dense gate directly).
+        if stat_depth is None:
+            stats = circuit_stats_in_basis(
+                qc_k, QLBM_METRIC_BASIS,
+                optimization_level=optimization_level,
+                seed_transpiler=seed,
+            )
+            stat_depth = stats["depth"]
+            stat_gates = stats["gate_counts"]
 
         # Aer simulates the dense UnitaryGate directly; no transpile.
         counts, _ = execute_circuit_counts(
@@ -306,6 +326,9 @@ def _qlbm_hadamard_signs(
             n_kept_total / (n_run * max(shots, 1)) if n_run else 0.0
         ),
         "n_bins_run": n_run,
+        "depth_per_circuit": stat_depth if stat_depth is not None else 0,
+        "gate_counts_per_circuit": stat_gates if stat_gates is not None
+        else {},
     }
     return signs, info
 
@@ -326,6 +349,7 @@ def run_qlbm_circuit_simulation(
     sign_recovery: str = "none",
     optimization_level: int = 1,
     seed: int | None = None,
+    metric_transpile_timeout: float = 60.0,
 ) -> tuple[list[np.ndarray], list[dict], list[int]]:
     """Run QLBM circuit simulation (statevector or shots).
 
@@ -377,7 +401,12 @@ def run_qlbm_circuit_simulation(
         leakage: float | None = None
         neg_mass: float | None = None
         had_p_kept: float | None = None
+        had_depth: int | None = None
+        had_gates: dict | None = None
         circ_after: dict | None = None
+        construct_t = transpile_t = execute_t = 0.0
+        sign_t = metric_t = 0.0
+        n_circ = 0
 
         if shots == 0:
             # Statevector path: build circuit, simulate
@@ -417,7 +446,9 @@ def run_qlbm_circuit_simulation(
                 f = np.zeros_like(f)
                 leakage = 0.0
             else:
+                t_c = time.time()
                 qc, contraction = build_qlbm_step_circuit(f, tau, q)
+                construct_t = time.time() - t_c
                 cumulative_norm *= contraction
                 psi_in = vec_in / norm_in
 
@@ -444,8 +475,8 @@ def run_qlbm_circuit_simulation(
                 # --optimization-level / --seed contract, and so
                 # hardware backends flow through SamplerV2 consistently.
                 from q8020_cfd_qutil.circuit import (
-                    circuit_stats_in_basis,
                     execute_circuit_counts,
+                    safe_circuit_stats_in_basis,
                     transpile_circuit,
                 )
 
@@ -458,23 +489,35 @@ def run_qlbm_circuit_simulation(
                 qc_full.initialize(psi_in.tolist(), range(n_qubits))
                 qc_full.compose(qc, inplace=True)
                 qc_full.measure_all()
-                qc_t, _ = transpile_circuit(
+                qc_t, t_info = transpile_circuit(
                     qc_full, backend_eff,
                     optimization_level=optimization_level,
                     seed_transpiler=seed,
                 )
+                transpile_t = t_info["wall_time"]
                 # Aer keeps the dense collide+stream step as one
                 # un-lowered UnitaryGate, so its transpiled depth/cx are
                 # meaningless.  Decompose to a hardware basis purely for
                 # honest depth/gate reporting (does not affect execution).
-                circ_after = circuit_stats_in_basis(
+                # Tracked as metric overhead, separate from the pipeline
+                # transpile time above.
+                # Hardware-basis decomposition for honest depth/cx, run
+                # out-of-process so a synthesis crash/hang can't kill the
+                # run.  metric_transpile_timeout caps it (0 = uncapped).
+                t_m = time.time()
+                circ_after = safe_circuit_stats_in_basis(
                     qc_full, QLBM_METRIC_BASIS,
                     optimization_level=optimization_level,
                     seed_transpiler=seed,
+                    timeout=metric_transpile_timeout,
+                    try_decompose=False,
                 )
-                counts, _ = execute_circuit_counts(
+                metric_t = time.time() - t_m
+                counts, exec_info = execute_circuit_counts(
                     qc_t, backend_eff, shots=shots, seed=seed,
                 )
+                execute_t = exec_info["wall_time"]
+                n_circ = 1  # the main step circuit
 
                 psi_out_mag = np.zeros(dim)
                 for bitstr, cnt in counts.items():
@@ -498,12 +541,17 @@ def run_qlbm_circuit_simulation(
                     signs[signs == 0] = 1.0
                     psi_out = signs * psi_out_mag
                 elif sign_recovery == "hadamard_test":
+                    t_s = time.time()
                     signs, had_info = _qlbm_hadamard_signs(
                         psi_in, qc, n_qubits, shots, backend_eff, q,
                         optimization_level=optimization_level,
                         seed=seed, mag=psi_out_mag,
                     )
+                    sign_t = time.time() - t_s
                     had_p_kept = had_info["p_kept_per_bin_mean"]
+                    had_depth = had_info["depth_per_circuit"]
+                    had_gates = had_info["gate_counts_per_circuit"]
+                    n_circ += had_info["n_bins_run"]  # per-bin recovery
                     psi_out = signs * psi_out_mag
                 else:
                     psi_out = psi_out_mag
@@ -542,12 +590,33 @@ def run_qlbm_circuit_simulation(
             step_met["sign_recovery"] = sign_recovery
             if had_p_kept is not None:
                 step_met["hadamard_p_kept"] = had_p_kept
+            # Sign-recovery circuit size, per Hadamard-test bin circuit
+            # (all n_bins_run circuits share this depth/gate profile).
+            if had_depth is not None:
+                step_met["sign_recovery_depth_per_circuit"] = had_depth
+                step_met["sign_recovery_gate_counts_per_circuit"] = had_gates
             # Transpiled-circuit stats for this step (basis-gate depth /
-            # gate counts); only meaningful on the shots path.
-            if circ_after is not None:
+            # gate counts), captured out-of-process so a synthesis crash
+            # can't kill the run.  Only meaningful on the shots path.
+            if circ_after is not None and circ_after.get("available"):
                 step_met["circuit_depth"] = circ_after["depth"]
                 step_met["gate_counts"] = circ_after["gate_counts"]
                 step_met["n_qubits"] = circ_after["num_qubits"]
+                step_met["circuit_metrics_available"] = True
+            else:
+                step_met["circuit_metrics_available"] = False
+                step_met["circuit_metrics_reason"] = (
+                    circ_after.get("reason") if circ_after else "skipped"
+                )
+            # Wall-time split (construct / transpile / execute), plus the
+            # qlbm-specific sign-recovery and metric-only transpile costs
+            # broken out so they don't contaminate the pipeline splits.
+            step_met["circuit_construction_time_s"] = construct_t
+            step_met["transpilation_time_s"] = transpile_t
+            step_met["execution_time_s"] = execute_t
+            step_met["sign_recovery_time_s"] = sign_t
+            step_met["metric_transpile_time_s"] = metric_t
+            step_met["n_circuits"] = n_circ
         metrics.append(step_met)
         lbm_solutions.append(u_cur.copy())
 

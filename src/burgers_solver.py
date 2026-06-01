@@ -64,6 +64,17 @@ from burgers_trotter import compute_error
 from q8020_cfd_metautil.solverfw import Grid1D
 
 
+# Preferred steps-per-segment for --auto-cadence (matches the q=5/n_steps=98
+# design point of 7); the actual value is the nearest divisor of n_steps.
+_PREFERRED_SEGMENT = 7
+
+
+def _nearest_divisor(n: int, target: int) -> int:
+    """Divisor of n closest to target (ties favour the larger divisor)."""
+    divisors = [d for d in range(1, n + 1) if n % d == 0]
+    return min(divisors, key=lambda d: (abs(d - target), -d))
+
+
 # *****************************************************************************
 # main
 
@@ -260,6 +271,16 @@ if __name__ == "__main__":
         help="Steps per segment (measure_reprepare mode only)",
     )
     parser.add_argument(
+        "--metric-transpile-timeout", type=float, default=60.0,
+        help=(
+            "Per-circuit wall-time cap (s) on the isolated basis-transpile "
+            "used ONLY to report depth/gate counts (qlbm + cole_hopf "
+            "circuit).  Never affects execution/results -- exceeding it "
+            "just records metrics unavailable.  0 = uncapped (let it run as "
+            "long as needed; good for a dedicated metrics pass)."
+        ),
+    )
+    parser.add_argument(
         "--lcu-taylor-order", type=int, default=4,
         help="Taylor truncation order for LCU propagator",
     )
@@ -276,6 +297,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save-every", type=int, default=0,
         help="Save solution every N steps (0=only initial and final)",
+    )
+    parser.add_argument(
+        "--auto-cadence", action="store_true",
+        help=(
+            "Auto-pick --segment-size (nearest divisor of the computed "
+            "n_steps) and --save-every (= segment-size), so segmented "
+            "evolution stays aligned at any q.  Overrides both flags."
+        ),
     )
     parser.add_argument(
         "--noshow", action="store_true",
@@ -386,6 +415,17 @@ if __name__ == "__main__":
     else:
         n_steps = args.n_steps
 
+    # Auto cadence: derive aligned segment-size/save-every from n_steps so
+    # measure_reprepare never trips the "n_steps % segment_size" check.
+    if args.auto_cadence:
+        args.segment_size = _nearest_divisor(n_steps, _PREFERRED_SEGMENT)
+        args.save_every = args.segment_size
+        print(
+            f"[burgers] auto-cadence: segment-size={args.segment_size} "
+            f"save-every={args.save_every} (n_steps={n_steps})",
+            file=sys.stderr, flush=True,
+        )
+
     print(
         f"[burgers] q={q} N={N} nu={nu:.1e} cfl={args.cfl} "
         f"dt={dt:.4e} n_steps={n_steps} method={args.method}",
@@ -481,6 +521,7 @@ if __name__ == "__main__":
         encoding=args.encoding,
         evolution_mode=args.evolution_mode,
         segment_size=args.segment_size,
+        metric_transpile_timeout=args.metric_transpile_timeout,
         phi_modes=args.phi_modes,
         taylor_order=args.lcu_taylor_order,
         readout=args.readout,
