@@ -249,15 +249,15 @@ if __name__ == "__main__":
              "inverse CH (0=no filter, shots path only)",
     )
 
-    # Chunked evolution
+    # Measure-and-reprepare (segmented) evolution
     parser.add_argument(
         "--evolution-mode", type=str, default="single",
-        choices=["single", "chunked"],
+        choices=["single", "measure_reprepare"],
         help="Evolution mode (cole_hopf_circuit shots only)",
     )
     parser.add_argument(
-        "--chunk-size", type=int, default=10,
-        help="Steps per chunk (chunked mode only)",
+        "--segment-size", type=int, default=10,
+        help="Steps per segment (measure_reprepare mode only)",
     )
     parser.add_argument(
         "--lcu-taylor-order", type=int, default=4,
@@ -480,7 +480,7 @@ if __name__ == "__main__":
         propagator=args.propagator,
         encoding=args.encoding,
         evolution_mode=args.evolution_mode,
-        chunk_size=args.chunk_size,
+        segment_size=args.segment_size,
         phi_modes=args.phi_modes,
         taylor_order=args.lcu_taylor_order,
         readout=args.readout,
@@ -491,7 +491,7 @@ if __name__ == "__main__":
     # Run selected method via solverfw
     print(f"[burgers] running method={args.method} ...", file=sys.stderr, flush=True)
     t0 = time.time()
-    sols_method, step_metrics = run_simulation_fw(
+    sols_method, step_metrics, genuine_steps = run_simulation_fw(
         fw_config, grid, u0, source_fn=source_fn,
     )
     t_method = time.time() - t0
@@ -504,6 +504,14 @@ if __name__ == "__main__":
             save_steps.append(n_steps)
     else:
         save_steps = [0, n_steps]
+
+    # LBM-family solvers run on a coarser native cadence (dt_lbm = dx);
+    # the caller-grid solutions are nearest-neighbor fills.  Persist and
+    # score ONLY the genuinely-computed steps so the stored series is
+    # honest about the method's true temporal resolution (no duplicated
+    # frames inflating it to the caller step count).
+    if genuine_steps is not None:
+        save_steps = sorted(set(genuine_steps))
 
     if sols_classical is not None:
         errors = {}

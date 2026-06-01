@@ -507,7 +507,7 @@ def heat_dense_block_full_circuit(
 
     If source_fn is given (with grid coords x), each step builds a
     fresh propagator with V(x, t_mid) at the Strang midpoint.
-    t_start offsets the global time for chunked evolution.
+    t_start offsets the global time for segmented evolution.
     """
     from burgers_potential import potential_from_source
 
@@ -604,7 +604,7 @@ def heat_lcu_full_circuit(
 
     If source_fn is given (with grid coords x), each step builds a
     fresh Strang-split propagator with V(x, t_mid).  t_start
-    offsets the global time for chunked evolution.
+    offsets the global time for segmented evolution.
 
     Returns circuit on q + n_anc qubits with the appropriate
     number of classical bits.
@@ -1025,10 +1025,10 @@ def reconstruct_phi_from_counts(
     return phi_hat
 
 
-# ── Chunked shots driver ─────────────────────────────────────────────
+# ── Measure-and-reprepare (segmented) shots driver ─────────────────────────────────────────────
 
 
-def _run_shots_chunked(
+def _run_shots_measure_reprepare(
     psi0: np.ndarray,
     q: int,
     nu: float,
@@ -1039,7 +1039,7 @@ def _run_shots_chunked(
     bc: str,
     propagator: str,
     shots: int,
-    chunk_size: int,
+    segment_size: int,
     bond_dim: int | None = None,
     encoding: str = "binary",
     backend: Any = None,
@@ -1052,9 +1052,9 @@ def _run_shots_chunked(
     taylor_order: int = 4,
     use_mps_prep: bool = True,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
-    """Chunked evolution: K chunks of chunk_size steps each.
+    """Measure-and-reprepare (segmented) evolution: K segments of segment_size steps each.
 
-    Between chunks, classically read out post-selected amplitudes
+    Between segments, classically read out post-selected amplitudes
     and re-prep as fresh IC.  No classical PDE physics — only
     amplitude IO (decode counts -> re-encode via MPS prep).
 
@@ -1064,8 +1064,8 @@ def _run_shots_chunked(
     """
     if backend_type == "hardware":
         raise NotImplementedError(
-            "chunked evolution v1: sim only; hardware "
-            "chunking deferred to v2"
+            "segmented evolution v1: sim only; hardware "
+            "segmenting deferred to v2"
         )
 
     from q8020_cfd_qutil.circuit import (
@@ -1078,23 +1078,23 @@ def _run_shots_chunked(
 
     N = 1 << q
     n_steps_total = max(snap_steps)
-    n_chunks = n_steps_total // chunk_size
+    n_segments = n_steps_total // segment_size
 
     psi_current, init_norm = normalize_state(psi0)
     cumulative_norm = init_norm * phi_norm
     snapshots: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
 
     print(
-        f"[_run_shots_chunked] n_chunks={n_chunks} "
-        f"chunk_size={chunk_size} shots={shots}",
+        f"[_run_shots_measure_reprepare] n_segments={n_segments} "
+        f"segment_size={segment_size} shots={shots}",
         file=sys.stderr, flush=True,
     )
     t_total_start = time.time()
 
-    for chunk_idx in range(n_chunks):
-        t_chunk = time.time()
-        global_step_start = chunk_idx * chunk_size
-        t_start_chunk = global_step_start * dt
+    for segment_idx in range(n_segments):
+        t_segment = time.time()
+        global_step_start = segment_idx * segment_size
+        t_start_segment = global_step_start * dt
 
         # 1. Build prep circuit from current amplitudes
         if use_mps_prep:
@@ -1108,25 +1108,25 @@ def _run_shots_chunked(
             prep_qc.initialize(psi_current.tolist(), range(q))
             n_bond = 0
 
-        # 2. Build chunk_size-step evolution circuit
-        T_chunk = dt * chunk_size
+        # 2. Build segment_size-step evolution circuit
+        T_segment = dt * segment_size
         if propagator == "qft-diagonal":
             full_qc = heat_qft_full_circuit(
-                q, nu, T_chunk, chunk_size, L_box, bc=bc,
+                q, nu, T_segment, segment_size, L_box, bc=bc,
             )
         elif propagator == "lcu":
             full_qc = heat_lcu_full_circuit(
-                q, nu, T_chunk, chunk_size, L_box, bc=bc,
+                q, nu, T_segment, segment_size, L_box, bc=bc,
                 taylor_order=taylor_order,
                 source_fn=source_fn, x=x,
-                t_start=t_start_chunk,
+                t_start=t_start_segment,
             )
         else:
             full_qc = heat_dense_block_full_circuit(
-                q, nu, T_chunk, chunk_size, L_box, bc=bc,
+                q, nu, T_segment, segment_size, L_box, bc=bc,
                 encoding=encoding,
                 source_fn=source_fn, x=x,
-                t_start=t_start_chunk,
+                t_start=t_start_segment,
             )
 
         n_heat_anc = full_qc.num_qubits - q
@@ -1163,10 +1163,10 @@ def _run_shots_chunked(
             _skip_transpile = False
 
         print(
-            f"[_run_shots_chunked] chunk {chunk_idx + 1}/"
-            f"{n_chunks} steps "
+            f"[_run_shots_measure_reprepare] segment {segment_idx + 1}/"
+            f"{n_segments} steps "
             f"{global_step_start+1}-"
-            f"{global_step_start+chunk_size} "
+            f"{global_step_start+segment_size} "
             f"depth={raw_qc.depth()}"
             f"{' (skip transpile — Aer+LCU)' if _skip_transpile else ' transpiling'} ...",
             file=sys.stderr, flush=True,
@@ -1192,11 +1192,11 @@ def _run_shots_chunked(
         n_kept, data_counts = post_select_counts(counts, q)
         p_success = n_kept / shots if shots > 0 else 0.0
 
-        step_at_end = (chunk_idx + 1) * chunk_size
+        step_at_end = (segment_idx + 1) * segment_size
 
         if n_kept == 0:
             print(
-                f"[_run_shots_chunked] chunk {chunk_idx + 1}: "
+                f"[_run_shots_measure_reprepare] segment {segment_idx + 1}: "
                 f"ZERO post-selected counts; propagating NaN",
                 file=sys.stderr, flush=True,
             )
@@ -1214,10 +1214,10 @@ def _run_shots_chunked(
             cumulative_norm *= np.sqrt(p_success)
             psi_current = psi_new
 
-        elapsed = time.time() - t_chunk
+        elapsed = time.time() - t_segment
         print(
-            f"[_run_shots_chunked] chunk {chunk_idx + 1}/"
-            f"{n_chunks} done in {elapsed:.1f}s "
+            f"[_run_shots_measure_reprepare] segment {segment_idx + 1}/"
+            f"{n_segments} done in {elapsed:.1f}s "
             f"p_success={p_success:.4f} "
             f"cumulative_norm={cumulative_norm:.4e}",
             file=sys.stderr, flush=True,
@@ -1232,8 +1232,8 @@ def _run_shots_chunked(
                 "p_success": p_success,
                 "n_steps": step_at_end,
                 "step": step_at_end,
-                "chunk_idx": chunk_idx,
-                "chunk_size": chunk_size,
+                "segment_idx": segment_idx,
+                "segment_size": segment_size,
                 "cumulative_norm": cumulative_norm,
                 "transpile": t_info,
                 "execute": exec_info,
@@ -1244,7 +1244,7 @@ def _run_shots_chunked(
 
     total_elapsed = time.time() - t_total_start
     print(
-        f"[_run_shots_chunked] all {n_chunks} chunks "
+        f"[_run_shots_measure_reprepare] all {n_segments} segments "
         f"done in {total_elapsed:.1f}s",
         file=sys.stderr, flush=True,
     )
@@ -1881,7 +1881,7 @@ def run_cole_hopf_circuit_simulation(
     seed: int | None = None,
     source_fn=None,
     evolution_mode: str = "single",
-    chunk_size: int = 10,
+    segment_size: int = 10,
     phi_modes: int = 0,
     taylor_order: int = 4,
     use_mps_prep: bool = True,
@@ -1998,11 +1998,11 @@ def run_cole_hopf_circuit_simulation(
                 f"'direct' or 'hadamard_per_bin'"
             )
         if readout == "hadamard_per_bin" and (
-            evolution_mode == "chunked"
+            evolution_mode == "measure_reprepare"
         ):
             raise NotImplementedError(
                 "hadamard_per_bin readout requires "
-                "evolution_mode=single (chunked v1 unsupported)"
+                "evolution_mode=single (segmented v1 unsupported)"
             )
 
         if readout == "hadamard_per_bin":
@@ -2020,27 +2020,27 @@ def run_cole_hopf_circuit_simulation(
                 taylor_order=taylor_order,
                 use_mps_prep=use_mps_prep,
             )
-        elif evolution_mode == "chunked":
+        elif evolution_mode == "measure_reprepare":
             # Validate alignment
-            if n_steps % chunk_size != 0:
+            if n_steps % segment_size != 0:
                 raise ValueError(
-                    f"chunked mode requires n_steps ({n_steps}) "
-                    f"divisible by chunk_size ({chunk_size})"
+                    f"segmented mode requires n_steps ({n_steps}) "
+                    f"divisible by segment_size ({segment_size})"
                 )
             bad = [s for s in snap_steps
-                   if s % chunk_size != 0]
+                   if s % segment_size != 0]
             if bad:
                 raise ValueError(
-                    f"chunked mode: snap_steps {bad} not "
-                    f"aligned to chunk_size={chunk_size}; "
+                    f"segmented mode: snap_steps {bad} not "
+                    f"aligned to segment_size={segment_size}; "
                     f"set --save-every to a multiple of "
-                    f"--chunk-size"
+                    f"--segment-size"
                 )
-            batch_results = _run_shots_chunked(
+            batch_results = _run_shots_measure_reprepare(
                 psi0, q, nu, dt, snap_steps, L_box,
                 phi_norm,
                 bc=phi_bc, propagator=propagator,
-                shots=shots, chunk_size=chunk_size,
+                shots=shots, segment_size=segment_size,
                 bond_dim=bond_dim, encoding=encoding,
                 backend=backend, backend_type=backend_type,
                 backend_name=backend_name,
@@ -2074,7 +2074,7 @@ def run_cole_hopf_circuit_simulation(
                 phi_hat = fourier_low_pass_phi(
                     phi_hat, phi_modes,
                 )
-            u_snap = cole_hopf_inverse(phi_hat, dx, nu)
+            u_snap = cole_hopf_inverse(phi_hat, dx, nu, bc=bc)
             solutions[s] = u_snap
             all_metrics.append(met)
             if s % max(1, n_steps // 5) == 0 or s == n_steps:
@@ -2114,10 +2114,10 @@ def run_cole_hopf_circuit_simulation(
             psi_snap, q, encoding,
         )
         if use_centering:
-            u_snap = cole_hopf_inverse(psi_snap, dx, nu)
+            u_snap = cole_hopf_inverse(psi_snap, dx, nu, bc=bc)
         else:
             phi_snap = psi_snap * phi_norm
-            u_snap = cole_hopf_inverse(phi_snap, dx, nu)
+            u_snap = cole_hopf_inverse(phi_snap, dx, nu, bc=bc)
         solutions[s] = u_snap
 
     return solutions, circ_metrics

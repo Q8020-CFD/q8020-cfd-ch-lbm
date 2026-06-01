@@ -35,6 +35,13 @@ from burgers_lbm import (
 )
 
 
+# Gate basis used only for reporting qlbm circuit depth / gate counts
+# (the canonical IBM superconducting basis; cx is the dominant-cost
+# metric and is directly comparable to the cole_hopf_circuit cx counts).
+# Reporting only -- execution still runs the exact dense step unitary.
+QLBM_METRIC_BASIS = ["cx", "rz", "sx", "x"]
+
+
 # ── Streaming circuit ─────────────────────────────────────────────────
 
 
@@ -319,7 +326,7 @@ def run_qlbm_circuit_simulation(
     sign_recovery: str = "none",
     optimization_level: int = 1,
     seed: int | None = None,
-) -> tuple[list[np.ndarray], list[dict]]:
+) -> tuple[list[np.ndarray], list[dict], list[int]]:
     """Run QLBM circuit simulation (statevector or shots).
 
     shots=0:   statevector path -- exact amplitudes via Aer/Statevector.
@@ -370,6 +377,7 @@ def run_qlbm_circuit_simulation(
         leakage: float | None = None
         neg_mass: float | None = None
         had_p_kept: float | None = None
+        circ_after: dict | None = None
 
         if shots == 0:
             # Statevector path: build circuit, simulate
@@ -436,6 +444,7 @@ def run_qlbm_circuit_simulation(
                 # --optimization-level / --seed contract, and so
                 # hardware backends flow through SamplerV2 consistently.
                 from q8020_cfd_qutil.circuit import (
+                    circuit_stats_in_basis,
                     execute_circuit_counts,
                     transpile_circuit,
                 )
@@ -451,6 +460,15 @@ def run_qlbm_circuit_simulation(
                 qc_full.measure_all()
                 qc_t, _ = transpile_circuit(
                     qc_full, backend_eff,
+                    optimization_level=optimization_level,
+                    seed_transpiler=seed,
+                )
+                # Aer keeps the dense collide+stream step as one
+                # un-lowered UnitaryGate, so its transpiled depth/cx are
+                # meaningless.  Decompose to a hardware basis purely for
+                # honest depth/gate reporting (does not affect execution).
+                circ_after = circuit_stats_in_basis(
+                    qc_full, QLBM_METRIC_BASIS,
                     optimization_level=optimization_level,
                     seed_transpiler=seed,
                 )
@@ -524,14 +542,29 @@ def run_qlbm_circuit_simulation(
             step_met["sign_recovery"] = sign_recovery
             if had_p_kept is not None:
                 step_met["hadamard_p_kept"] = had_p_kept
+            # Transpiled-circuit stats for this step (basis-gate depth /
+            # gate counts); only meaningful on the shots path.
+            if circ_after is not None:
+                step_met["circuit_depth"] = circ_after["depth"]
+                step_met["gate_counts"] = circ_after["gate_counts"]
+                step_met["n_qubits"] = circ_after["num_qubits"]
         metrics.append(step_met)
         lbm_solutions.append(u_cur.copy())
 
-    # Remap to caller's time grid via nearest-neighbor.
+    # Remap to caller's time grid via nearest-neighbor.  This fills every
+    # caller step for contract safety (solutions[-1], arbitrary indexing),
+    # but only the genuine_steps below correspond to a real native lattice
+    # state -- the rest are duplicates and must not be persisted as data.
     solutions = [u0.copy()]
     for j in range(1, n_steps + 1):
         t_target = j * dt
         k = min(round(t_target / dt_lbm), n_steps_lbm)
         solutions.append(lbm_solutions[k].copy())
 
-    return solutions, metrics
+    # Caller-step indices that land on a genuinely-computed native state.
+    genuine_steps = sorted({
+        min(round(k * dt_lbm / dt), n_steps)
+        for k in range(n_steps_lbm + 1)
+    })
+
+    return solutions, metrics, genuine_steps

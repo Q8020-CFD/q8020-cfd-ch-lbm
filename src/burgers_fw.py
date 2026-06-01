@@ -67,7 +67,7 @@ class BurgersConfig(SolverConfig):
     propagator: str = "qft-diagonal"
     encoding: str = "binary"
     evolution_mode: str = "single"
-    chunk_size: int = 10
+    segment_size: int = 10
     phi_modes: int = 0
     taylor_order: int = 4
     readout: str = "direct"
@@ -248,13 +248,21 @@ class _DelegatingIntegrator(TimeIntegrator):
     """
 
     def step(self, state, spatial_op, grid, config, dt, t=0.0):
-        sols, mets = self._run_all(state, grid, config, dt)
+        result = self._run_all(state, grid, config, dt)
+        # LBM-family solvers also return a genuine-step set (3-tuple);
+        # the rest return (solutions, metrics).
+        if len(result) == 3:
+            sols, mets, genuine_steps = result
+        else:
+            sols, mets = result
+            genuine_steps = None
         # Store full solution list in metrics so the caller can
         # retrieve it (MainLoop will get the final state from us).
         final = DenseState(sols[-1])
         return final, {
             "_delegated_solutions": sols,
             "_delegated_metrics": mets,
+            "_delegated_genuine_steps": genuine_steps,
         }
 
     def _run_all(self, state, grid, config, dt):
@@ -374,7 +382,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
             seed=config.seed,
             source_fn=source_fn,
             evolution_mode=config.evolution_mode,
-            chunk_size=config.chunk_size,
+            segment_size=config.segment_size,
             phi_modes=config.phi_modes,
             taylor_order=config.taylor_order,
             readout=getattr(config, "readout", "direct"),
@@ -446,11 +454,12 @@ def run_simulation_fw(
     grid: Grid1D,
     u0: np.ndarray,
     source_fn=None,
-) -> tuple[list[np.ndarray], list[dict] | None]:
+) -> tuple[list[np.ndarray], list[dict] | None, list[int] | None]:
     """Run a Burgers simulation using the solverfw MainLoop.
 
-    Drop-in replacement for burgers_trotter.run_simulation().
-    Returns (solutions, step_metrics) with the same contract.
+    Returns (solutions, step_metrics, genuine_steps).  genuine_steps is
+    the caller-step indices that are genuinely computed (LBM family,
+    coarser than the caller grid) or None when every step is genuine.
     """
     from q8020_cfd_metautil.solverfw import MainLoop
 
@@ -468,11 +477,12 @@ def run_simulation_fw(
         )
         sols = result_metrics.get("_delegated_solutions", [u0])
         mets = result_metrics.get("_delegated_metrics")
-        return sols, mets
+        genuine = result_metrics.get("_delegated_genuine_steps")
+        return sols, mets, genuine
 
     # Standard per-step methods: use MainLoop.
     loop = MainLoop()
     solutions, all_metrics = loop.run(
         config, grid, state, spatial_op, integrator,
     )
-    return solutions, all_metrics
+    return solutions, all_metrics, None

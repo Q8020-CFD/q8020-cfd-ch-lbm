@@ -425,7 +425,7 @@ Pathway 1 isn't.
 Initial `φ` amplitudes are loaded onto qubits via the Ran 2020
 MPS-to-circuit state-prep pipeline (the MPS is used only for encoding,
 not for evolution). Three propagator variants are available
-(§§4.3.2–4.3.4); shots-mode readout is described in §4.3.6 and chunked
+(§§4.3.2–4.3.4); shots-mode readout is described in §4.3.6 and segmented
 evolution in §4.3.7. Sign recovery is not needed because `φ > 0` by
 construction.
 
@@ -439,8 +439,8 @@ encode/decode boundary and one-time setup:
    with mean-centring for numerical stability.
 2. **MPS state-prep** (`burgers_mps.classical_to_mps` →
    `mps_to_circuit`, Ran 2020) — one-time per circuit build: convert
-   classical `φ₀` amplitudes into a state-prep subcircuit. In chunked
-   mode this prep is repeated once per chunk (§4.3.7).
+   classical `φ₀` amplitudes into a state-prep subcircuit. In segmented
+   mode this prep is repeated once per segment (§4.3.7).
 3. **Propagator-coefficient build** — one-time per `(ν, δt, q)` choice
    (`compute_theta_exact`, `compute_theta_dct`, or the LCU PREPARE
    coefficients `α_k = √(|c_k|/λ)`). For `dense-block` this includes
@@ -668,7 +668,7 @@ stages (`burgers_cole_hopf_circuit.py:993-1025`):
 `P_success` degrades as `ν·δt·t` grows (stronger cumulative damping →
 fewer ancilla-`|0⟩` shots), so long evolutions in the
 shot-dominated regime require either a larger `--shots` budget or the
-chunked-evolution mode of §4.3.7.
+segmented-evolution mode of §4.3.7.
 
 **Experimental Hadamard-per-bin readout.** An alternative interferometric
 readout that estimates each bin's signed amplitude via a Hadamard test
@@ -681,31 +681,31 @@ intended for the deep-shot regime at small `ν` where standard
 post-selection becomes statistics-starved. Not validated for
 production yet.
 
-#### 4.3.7 Chunked evolution mode
+#### 4.3.7 Measure-and-reprepare (segmented) evolution mode
 
-For long runs in shots mode, `--evolution-mode chunked` splits the
-`n_steps` total into `K = n_steps / chunk_size` chunks. Each chunk is
-a self-contained circuit comprising state-prep + `chunk_size`
-propagator layers + measurement. Between chunks
-(`_run_shots_chunked` in `burgers_cole_hopf_circuit.py:1031`):
+For long runs in shots mode, `--evolution-mode measure_reprepare` splits the
+`n_steps` total into `K = n_steps / segment_size` segments. Each segment is
+a self-contained circuit comprising state-prep + `segment_size`
+propagator layers + measurement. Between segments
+(`_run_shots_measure_reprepare` in `burgers_cole_hopf_circuit.py:1031`):
 
-1. **Decode**: post-select and reconstruct `φ̂` from the chunk's shots
+1. **Decode**: post-select and reconstruct `φ̂` from the segment's shots
    (§4.3.6).
 2. **Re-encode**: run `classical_to_mps(φ̂)` → `mps_to_circuit(...)` to
-   build a fresh state-prep subcircuit for the next chunk's starting
+   build a fresh state-prep subcircuit for the next segment's starting
    amplitudes. The MPS bond dim follows `--bond-dim`/`--mps-threshold`.
-3. **Run next chunk** with the fresh prep.
+3. **Run next segment** with the fresh prep.
 
 This trades cumulative post-selection survival (which falls
-exponentially in `chunk_size`) against information loss from
-classical decode/re-encode at each chunk boundary (limited by the MPS
+exponentially in `segment_size`) against information loss from
+classical decode/re-encode at each segment boundary (limited by the MPS
 truncation). The classical norm and `P_success` factors compose
-multiplicatively across chunks
-(`cumulative_norm *= chunk_norm; cumulative_p_success *= chunk_p_success`),
+multiplicatively across segments
+(`cumulative_norm *= segment_norm; cumulative_p_success *= segment_p_success`),
 so the reconstructed `φ̂` at any snapshot still represents physical
 amplitudes. No classical PDE physics enters the loop — only amplitude
-IO at the chunk boundaries. Hardware backend support for chunked
-evolution is deferred to v2; chunked mode currently requires
+IO at the segment boundaries. Hardware backend support for segmented
+evolution is deferred to v2; segmented mode currently requires
 `--backend-type sim`.
 
 #### 4.3.8 Complexity summary
@@ -977,13 +977,14 @@ by construction. Choices and semantics in §3.3.4.
 `--optimization-level`. See
 [SPEC-shots-backend.md](archive/SPEC-shots-backend.md).
 
-### 7.7 Evolution mode (`--evolution-mode {single,chunked}`, `--chunk-size`)
+### 7.7 Evolution mode (`--evolution-mode {single,measure_reprepare}`, `--segment-size`)
 
 `cole_hopf_circuit` shots-mode only. `single` = one big circuit with
-`n_steps` inlined step layers (today's default). `chunked` = break the
-evolution into `K`-step segments, read out and re-prep amplitudes
-between segments. Trades depth-per-circuit against shot-noise
-compounding. See [SPEC-chunked-evolution.md](archive/SPEC-chunked-evolution.md).
+`n_steps` inlined step layers (today's default). `measure_reprepare`
+(segmented) = break the evolution into `K`-step segments, read out and
+re-prep amplitudes between segments. Trades depth-per-circuit against
+shot-noise compounding. See
+[SPEC-measure-reprepare-evolution.md](archive/SPEC-measure-reprepare-evolution.md).
 
 ### 7.8 Source forcing (`--source {sine,none}`)
 
@@ -1144,7 +1145,7 @@ statevector mode the backend is unused and the step is simulated via
 
 The shared `qutil` execution layer means **all real-circuit shots
 paths** (`quantum_circuit` per-step, `cole_hopf_circuit` batched or
-chunked, `qlbm_circuit` per-step) honour the same flag contract:
+segmented, `qlbm_circuit` per-step) honour the same flag contract:
 `--shots`, `--seed`, `--optimization-level`, and `--backend-type
 {sim,hardware}` produce comparable behaviour across methods.
 `execute_circuit_counts` transparently dispatches to `backend.run`
@@ -1363,7 +1364,7 @@ python burgers_solver.py --q 5 --method cole_hopf_circuit \
 | LCU propagator (F3) | [`SPEC-F3-LCU-method.md`](archive/SPEC-F3-LCU-method.md), [`SPEC-F3-LCU-source-forcing.md`](archive/SPEC-F3-LCU-source-forcing.md) |
 | Source forcing | [`SPEC-source-forcing.md`](archive/SPEC-source-forcing.md), [`SPEC-source-forcing-REVIEW.md`](archive/SPEC-source-forcing-REVIEW.md) |
 | Shots / backend / noise | [`SPEC-shots-backend.md`](archive/SPEC-shots-backend.md) |
-| Chunked evolution | [`SPEC-chunked-evolution.md`](archive/SPEC-chunked-evolution.md) |
+| Measure-and-reprepare (segmented) evolution | [`SPEC-measure-reprepare-evolution.md`](archive/SPEC-measure-reprepare-evolution.md) |
 | Encoding (binary vs gray) | [`SPEC-encoding-switch.md`](future/SPEC-encoding-switch.md) |
 | Paper-fidelity review | [`REVIEW-murali-paper-fidelity.md`](archive/REVIEW-murali-paper-fidelity.md), [`DEEP-OVERLAP-murali-vs-ucan.md`](archive/DEEP-OVERLAP-murali-vs-ucan.md) |
 | Future work / open gaps | [`FUTURE-WORK.md`](future/FUTURE-WORK.md) |

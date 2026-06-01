@@ -620,10 +620,10 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--save-every" = 1
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
-# ── Chunked evolution ─────────────────────────────────────────────────────────
+# ── Measure-and-reprepare (segmented) evolution ─────────────────────────────────────────────────────────
 
 # Shock-resolving: nu=0.05, past shock time (196% -> 100 steps).
-# 5 chunks of 20 steps, 500k shots, phi_modes=6.
+# 5 segments of 20 steps, 500k shots, phi_modes=6.
 [cole_hopf_circuit_forced_q5_chunked_shock]
 "--method" = "cole_hopf_circuit"
 "--propagator" = "dense-block"
@@ -638,8 +638,8 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--seed" = 42
 "--optimization-level" = 0
 "--save-every" = 20
-"--evolution-mode" = "chunked"
-"--chunk-size" = 20
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 20
 "--phi-modes" = 6
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
@@ -657,8 +657,8 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--seed" = 42
 "--optimization-level" = 0
 "--save-every" = 10
-"--evolution-mode" = "chunked"
-"--chunk-size" = 10
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
 "--phi-modes" = 4
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
@@ -676,8 +676,8 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--seed" = 42
 "--optimization-level" = 0
 "--save-every" = 10
-"--evolution-mode" = "chunked"
-"--chunk-size" = 10
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
 "--phi-modes" = 4
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
@@ -804,9 +804,9 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--save-every" = 1
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
-# Forced LCU + chunked shots: end-to-end realism.
+# Forced LCU + segmented shots: end-to-end realism.
 # Acceptance: final L2 vs FTCS forced < 0.15.
-# n_steps must be divisible by chunk_size; override shock-pct
+# n_steps must be divisible by segment_size; override shock-pct
 # derivation (which gives 51) with an explicit --n-steps 50.
 [cole_hopf_circuit_lcu_forced_chunked_q5]
 "--method" = "cole_hopf_circuit"
@@ -824,8 +824,8 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--bc" = "periodic"
 "--lcu-taylor-order" = 4
 "--save-every" = 10
-"--evolution-mode" = "chunked"
-"--chunk-size" = 10
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── Paper-scale Dirichlet BC + dense-block method ────────────────────────────

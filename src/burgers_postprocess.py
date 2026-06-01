@@ -251,44 +251,54 @@ class BurgersPostProcessor(PostProcessor):
                 m.get("circuit_construction_time_s", 0)
                 for m in step_metrics
             )
+            # Per-step circuit stats may be flat (burgers_trotter:
+            # circuit_depth/gate_counts/n_qubits) or nested under
+            # transpile.{after,wall_time} (cole_hopf_circuit / qlbm_circuit
+            # via the qutil transpile helper).  Normalise both shapes.
+            def _circ(m):
+                after = (m.get("transpile") or {}).get("after") or {}
+                depth = m.get("circuit_depth", after.get("depth"))
+                gates = m.get("gate_counts", after.get("gate_counts"))
+                nq = m.get("n_qubits", after.get("num_qubits"))
+                return depth, gates, nq
+
+            def _ttime(m):
+                return m.get(
+                    "transpilation_time_s",
+                    (m.get("transpile") or {}).get("wall_time", 0),
+                )
+
+            def _etime(m):
+                return m.get(
+                    "execution_time_s",
+                    (m.get("execute") or {}).get("wall_time", 0),
+                )
+
             analysis_data["total_transpilation_time"] = sum(
-                m.get("transpilation_time_s", 0)
-                for m in step_metrics
+                _ttime(m) for m in step_metrics
             )
             analysis_data["total_execution_time"] = sum(
-                m.get("execution_time_s", 0) for m in step_metrics
+                _etime(m) for m in step_metrics
             )
-            depths = [
-                m["circuit_depth"]
-                for m in step_metrics
-                if "circuit_depth" in m
-            ]
+            circ = [_circ(m) for m in step_metrics]
+            depths = [d for d, _, _ in circ if d is not None]
             analysis_data["avg_circuit_depth"] = (
                 sum(depths) / len(depths) if depths else None
             )
-            gate_totals = [
-                sum(m["gate_counts"].values())
-                for m in step_metrics
-                if "gate_counts" in m
-            ]
+            gate_dicts = [g for _, g, _ in circ if g]
+            gate_totals = [sum(g.values()) for g in gate_dicts]
             analysis_data["avg_gate_count"] = (
                 sum(gate_totals) / len(gate_totals)
                 if gate_totals
                 else None
             )
             analysis_data["avg_cx_gates"] = (
-                sum(
-                    m["gate_counts"].get("cx", 0)
-                    for m in step_metrics
-                    if "gate_counts" in m
-                )
-                / n
-            )
-            analysis_data["n_qubits"] = (
-                step_metrics[0].get("n_qubits")
-                if step_metrics
+                sum(g.get("cx", 0) for g in gate_dicts) / len(gate_dicts)
+                if gate_dicts
                 else None
             )
+            nqs = [nq for _, _, nq in circ if nq is not None]
+            analysis_data["n_qubits"] = nqs[0] if nqs else None
             analysis_data["sign_recovery"] = step_metrics[0].get(
                 "sign_recovery", "none",
             )

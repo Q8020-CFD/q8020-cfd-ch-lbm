@@ -105,6 +105,7 @@ def cole_hopf_inverse(
     dx: float,
     nu: float,
     eps_floor: float | None = None,
+    bc: str = "periodic",
 ) -> np.ndarray:
     """Inverse Cole-Hopf transform: phi -> u.
 
@@ -114,7 +115,12 @@ def cole_hopf_inverse(
     to log(phi) rather than phi, avoiding division by near-zero phi
     values that arise at small nu (large dynamic range).
 
-    Central-difference gradient with periodic wrapping.
+    Central difference in the interior.  At the boundaries: periodic
+    wrapping for bc='periodic'; one-sided (forward/backward) differences
+    otherwise.  The wrap is wrong under Dirichlet -- it pulls the
+    opposite wall's phi into the wall derivative, and when phi spans a
+    large dynamic range that manufactures a spurious u spike at each
+    wall.  One-sided differences keep the wall value local.
     """
     if eps_floor is None:
         eps_floor = 1e-30
@@ -123,9 +129,12 @@ def cole_hopf_inverse(
 
     dlog = np.zeros_like(phi)
     dlog[1:-1] = (log_phi[2:] - log_phi[:-2]) / (2.0 * dx)
-    # Periodic wrapping at boundaries
-    dlog[0] = (log_phi[1] - log_phi[-1]) / (2.0 * dx)
-    dlog[-1] = (log_phi[0] - log_phi[-2]) / (2.0 * dx)
+    if bc == "periodic":
+        dlog[0] = (log_phi[1] - log_phi[-1]) / (2.0 * dx)
+        dlog[-1] = (log_phi[0] - log_phi[-2]) / (2.0 * dx)
+    else:
+        dlog[0] = (log_phi[1] - log_phi[0]) / dx
+        dlog[-1] = (log_phi[-1] - log_phi[-2]) / dx
 
     u = -2.0 * nu * dlog
     return u

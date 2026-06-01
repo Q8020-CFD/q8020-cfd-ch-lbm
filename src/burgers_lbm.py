@@ -193,7 +193,7 @@ def run_lbm_simulation(
     n_steps: int,
     bc: str = "periodic",
     source_fn: Callable | None = None,
-) -> tuple[list[np.ndarray], list[dict]]:
+) -> tuple[list[np.ndarray], list[dict], list[int]]:
     """Run classical LBM for n_steps, returning velocity at every step.
 
     In LBM, dt is locked to dx (streaming = one lattice site per step).
@@ -204,8 +204,11 @@ def run_lbm_simulation(
 
     Returns
     -------
-    (solutions, metrics) where solutions[i] is u at step i (length
-    n_steps+1 including IC), metrics is list of per-step dicts.
+    (solutions, metrics, genuine_steps) where solutions[i] is u at step
+    i (length n_steps+1 including IC), metrics is list of per-step dicts,
+    and genuine_steps is the sorted caller-step indices that correspond
+    to a genuinely-computed native lattice state (the rest of solutions
+    are nearest-neighbor fills and should not be persisted as data).
     """
     N = len(u0)
     dx = x[1] - x[0]
@@ -274,7 +277,14 @@ def run_lbm_simulation(
         )
         solutions.append(lbm_solutions[k].copy())
 
-    return solutions, metrics
+    # Caller-step indices that land on a genuinely-computed native state
+    # (no NN duplication).  Each native step k occurs at t = k*dt_lbm.
+    genuine_steps = sorted({
+        min(round(k * dt_lbm / dt), n_steps)
+        for k in range(n_steps_lbm + 1)
+    })
+
+    return solutions, metrics, genuine_steps
 
 
 # ── Helpers for circuit path ──────────────────────────────────────────

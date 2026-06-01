@@ -1,4 +1,4 @@
-# SPEC — Chunked evolution for shots-mode Cole-Hopf circuit
+# SPEC — Measure-and-reprepare (segmented) evolution for shots-mode Cole-Hopf circuit (formerly "chunked evolution")
 
 Self-contained handoff. Reader has not seen prior conversation.
 

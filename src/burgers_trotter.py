@@ -775,7 +775,7 @@ def run_simulation(
     optimization_level: int = 1,
     seed: int | None = None,
     evolution_mode: str = "single",
-    chunk_size: int = 10,
+    segment_size: int = 10,
     phi_modes: int = 0,
     readout: str = "direct",
 ) -> tuple[list[np.ndarray], list[dict] | None]:
@@ -839,7 +839,7 @@ def run_simulation(
             seed=seed,
             source_fn=source_fn,
             evolution_mode=evolution_mode,
-            chunk_size=chunk_size,
+            segment_size=segment_size,
             phi_modes=phi_modes,
             readout=readout,
         )

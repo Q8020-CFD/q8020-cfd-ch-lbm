@@ -235,7 +235,7 @@ trade is unfavourable.
 Post-select on all-ancilla-zero per step; cumulative
 `P_success ≈ p^N_steps` (multiplicative across steps), so chunked-
 evolution mode (already in tree, see
-[SPEC-chunked-evolution.md](SPEC-chunked-evolution.md)) is the
+[SPEC-measure-reprepare-evolution.md](SPEC-measure-reprepare-evolution.md)) is the
 right pairing for long horizons.
 
 ## 5. Plumbing changes
