@@ -1,0 +1,123 @@
+# Direct-u nonlinear Burgers via conservative LCU + measure-reprepare
+# SPEC-direct-u-nonlinear-lcu.md -- M4 scaling sweep (statevector).
+#
+# Run: q8020-sweep q8020-mps-burgers/input/burgers_direct_lcu.toml
+#
+# Method: direct_lcu.  Evolves u directly under the frozen-coefficient
+# conservative generator A_seg = nu*L - (1/2)*G*diag(u_seg), refreshed
+# every --segment-size steps (measure-reprepare).  Per-step truncated
+# Taylor of exp(A_seg*dt); --lcu-taylor-order sets the order.
+#
+# What this sweep maps (SV path):
+#   - accuracy vs Taylor order (lcu-taylor-order)
+#   - frozen-coefficient error vs segment size (segment-size)
+#   - q scaling: runtime + term-count/lambda growth
+# NOTE: the term count K (and the flattened dense circuit) grow fast
+#   with Taylor order: K ~ 37 / 167 / 680 at order 2 / 3 / 4
+#   (q-independent).  The operator build is rebuilt per segment, so
+#   small --segment-size means many rebuilds -- keep n_steps modest at
+#   high q.
+# The shots=0 blocks below are the SV accuracy/scaling sweep.  The real
+#   quantum wall -- post-select success ~ 1/lambda^2 -- is exercised by
+#   the [shots_*] blocks at the end (M3).  Honest gate-level depth/cx
+#   await the structured encoder (M4); the flattened dense SELECT is not
+#   force-synthesised (it would give a misleading ~4^(q+m) cx count).
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--method" = "direct_lcu"
+"--ic" = "sine"
+"--ic-amplitude" = 0.4
+"--source" = "none"
+"--bc" = "periodic"
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shots" = 0                # M2/M4 statevector path
+
+# ── q scaling: fixed order + segment, push grid size ─────────────────
+# Runtime/accuracy vs q at a moderate order and segment.  n_steps stays
+# short via shock-pct so the per-segment rebuild count is bounded.
+[q_scaling]
+"--q" = [3, 4, 5, 6]
+"--lcu-taylor-order" = 3
+"--segment-size" = 5
+"--shock-pct" = 50.0
+"--save-every" = 2
+
+# ── Taylor-order sweep at fixed q ────────────────────────────────────
+# Accuracy/term-count growth with order.  q=5 keeps it fast.
+[taylor_sweep_q5]
+"--q" = 5
+"--lcu-taylor-order" = [2, 3, 4]
+"--segment-size" = 5
+"--shock-pct" = 50.0
+"--save-every" = 2
+
+# ── Frozen-coefficient error vs segment size ─────────────────────────
+# Maps the only approximation in the method.  segment-size=1 refreshes
+# every step (most accurate, most rebuilds); larger lags the
+# nonlinearity.  q=5, order 4 for a clean accuracy reference.
+[segment_sweep_q5]
+"--q" = 5
+"--lcu-taylor-order" = 4
+"--segment-size" = [1, 2, 5, 10, 25]
+"--shock-pct" = 50.0
+"--save-every" = 1
+
+# ── MPS bond-dim truncation of the velocity field ────────────────────
+# Reprepares u through the Ran-2020 MPS pipeline at the given bond dim
+# each segment.  Truncation should be visible in the trajectory.
+[bond_sweep_q5]
+"--q" = 5
+"--lcu-taylor-order" = 3
+"--segment-size" = 5
+"--bond-dim" = [1, 2, 4]
+"--shock-pct" = 50.0
+"--save-every" = 2
+
+# ── Stretch: larger grids (heavier; run if q_scaling is comfortable) ─
+# q=7 at order 4 is the slow corner (term expansion x per-segment
+# rebuilds).  Lower order / larger segment keeps it tractable.
+[q_stretch]
+"--q" = [7]
+"--lcu-taylor-order" = 3
+"--segment-size" = 10
+"--shock-pct" = 40.0
+"--save-every" = 4
+
+# ── M3 shots: post-selection success-probability wall ────────────────
+# The real quantum wall the SV blocks cannot show: per-segment
+# post-select success ~ 1/lambda^2, lambda ~ exp(T_segment*lambda_A),
+# lambda_A ~ nu/dx^2 + ||u||_inf/dx.  --auto-cadence aligns segment-size
+# to a divisor of n_steps (shots requires n_steps % segment_size == 0).
+# sign-recovery=hadamard_test is the SHADOW-FREE signal (one extra
+# interferometric circuit per segment; signs propagate from the IC).
+# Swap to classical_oracle for the diagnostic cross-check (signs from
+# the dense operator).  Watch p_success collapse as q grows (smaller
+# dx -> larger lambda).
+[shots_q_scaling]
+"--q" = [3, 4, 5]
+"--lcu-taylor-order" = 3
+"--shots" = 100000
+"--shock-pct" = 40.0
+"--auto-cadence" = true
+"--sign-recovery" = "hadamard_test"
+"--seed" = 7
+
+# Segment-size sweep at fixed q: p_success vs frozen-segment length.
+# Explicit n-steps=20 (divisible by every segment size below) so the
+# divisibility check passes without auto-cadence overriding the sweep.
+[shots_segment_sweep_q4]
+"--q" = 4
+"--lcu-taylor-order" = 3
+"--shots" = 100000
+"--n-steps" = 20
+"--segment-size" = [1, 2, 4, 5, 10, 20]
+"--sign-recovery" = "hadamard_test"
+"--save-every" = 4
+"--seed" = 7

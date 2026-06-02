@@ -392,6 +392,41 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
         )
 
 
+class DirectLCUIntegrator(_DelegatingIntegrator):
+    """Direct-u conservative LCU + measure-reprepare (multi-step)."""
+
+    def __init__(self, backend: Any = None) -> None:
+        self.backend = backend
+
+    def _run_all(self, state, grid, config, dt):
+        from burgers_direct_lcu import run_direct_lcu_simulation
+
+        u0 = state.to_dense()
+        source_fn = None
+        if hasattr(config, "_source_fn"):
+            source_fn = config._source_fn
+
+        if config.shots > 0 and self.backend is None:
+            from q8020_cfd_qutil.backend import get_backend
+            self.backend = get_backend(
+                name=config.backend_name,
+                backend_type=config.backend_type,
+                t1=config.t1, t2=config.t2,
+                coupling_map=config.coupling_map,
+            )
+
+        return run_direct_lcu_simulation(
+            u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
+            source_fn=source_fn, shots=config.shots,
+            bond_dim=config.bond_dim, taylor_order=config.taylor_order,
+            segment_size=config.segment_size, seed=config.seed,
+            backend=self.backend,
+            optimization_level=config.optimization_level,
+            sign_recovery=config.sign_recovery,
+            metric_transpile_timeout=config.metric_transpile_timeout,
+        )
+
+
 # -----------------------------------------------------------------------
 # Integrator registry
 # -----------------------------------------------------------------------
@@ -399,6 +434,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
 # Methods that delegate their own multi-step loop.
 _DELEGATING_METHODS = {
     "tebd", "cole_hopf", "cole_hopf_circuit", "lbm", "qlbm_circuit",
+    "direct_lcu",
 }
 
 
@@ -443,6 +479,8 @@ def make_integrator(
         return LBMIntegrator()
     if m == "qlbm_circuit":
         return QLBMCircuitIntegrator(backend)
+    if m == "direct_lcu":
+        return DirectLCUIntegrator()
 
     raise ValueError(f"Unknown method: {m}")
 

@@ -123,7 +123,7 @@ boundary indices is forced to zero (`∂u/∂t = 0` at `x = 0, L`).
 `--method` selects the evolution scheme. Methods divide into three
 families:
 
-- **Direct-u**: march `u` directly (six methods).
+- **Direct-u**: march `u` directly (seven methods).
 - **Cole–Hopf**: linearize via `u = −2ν ∂_x ln φ` and march `φ` (two methods).
 - **QLBM (kinetic)**: march mesoscopic distributions `f_i` and recover `u`
   by moments (two methods).
@@ -147,6 +147,7 @@ Method roster:
 | `mps` | Direct-u | H | MPS state-prep + dense evolution |
 | `tebd` | Direct-u | C | Tensor-network classical |
 | `tebd_circuit` | Direct-u | NQ | W-II quantum circuit |
+| `direct_lcu` | Direct-u | PQ | **Pure-quantum conservative Burgers via LCU + measure-reprepare (this work); confronts the nonlinearity directly** |
 | `cole_hopf` | Cole–Hopf | C | Classical reference for the CH pathway |
 | `cole_hopf_circuit` | Cole–Hopf | PQ | **Pure-quantum Pathway 2 (this work)** |
 | `lbm` | QLBM | C | Classical D1Q3 BGK (renamed from `qlbm` — pure classical, no shots) |
@@ -159,7 +160,11 @@ reference, then Trotterised) and Pathway 2 = `cole_hopf_circuit`
 in the time loop after `φ₀` is prepared from `u₀`). They are the
 primary scientific objects of this codebase and are detailed
 mathematically in §§3.3 and 4.3. `qlbm_circuit` is the
-cross-comparison code from a different algorithmic family. All other
+cross-comparison code from a different algorithmic family.
+`direct_lcu` (§3.7) is a third pure-quantum pathway: unlike
+`cole_hopf_circuit` it does **not** linearize away the nonlinearity —
+it block-encodes the conservative Burgers generator itself and refreshes
+the advection coefficient by measurement (measure-reprepare). All other
 methods exist as references and diagnostics.
 
 ---
@@ -361,6 +366,57 @@ the current `u` each step (classical mirror). However the evolution
 itself — state-prep, gate layer, measurement — is entirely quantum. The
 classical mirror is confined to operator construction, not state readout
 or steerage.
+
+### 3.7 `direct_lcu` — pure-quantum conservative Burgers via LCU
+
+Marches `u` directly in **conservative (divergence) form**, evolving the
+velocity field under a frozen-coefficient generator whose advection
+coefficient is refreshed each segment from the measured state. Unlike
+`cole_hopf_circuit`, it confronts the nonlinearity head-on rather than
+linearizing it away — the route the Meena AIAA-2026 paper names but
+leaves open (see `docs/archive/SPEC-direct-u-nonlinear-lcu.md`).
+Implementation: `burgers_direct_lcu.py` + the
+`conservative_burgers_*` / `advection_diffusion_taylor_lcu_terms`
+helpers in `burgers_lcu.py`.
+
+**Generator.** Semi-discrete conservative Burgers is
+`du/dt = nu·L·u − (1/2)·G·(u²) = A(u)·u`, with `L`, `G` the LCU of the
+S+/S− ladder operators (paper Eqs. 9–12; `burgers_mpo.py`). Over a
+segment the coefficient is frozen at the measured field `u_seg`:
+`A_seg = nu·L − (1/2)·G·diag(u_seg)`. The known diagonal `diag(u_seg)`
+is decomposed into two unitary phase diagonals (no coherent oracle, no
+no-cloning issue — the value is classically known from the measurement).
+
+**Evolution.** A truncated-Taylor LCU block-encodes `exp(A_seg·dt)`
+(SV path applies it per step; shots path uses one segment-spanning
+`exp(A_seg·T_segment)` block-encoding), post-selecting the ancilla on
+`|0>`. Between segments the field is measured, reconstructed, and
+re-prepared (Ran-2020 MPS prep of `u`). This measure-reprepare loop is
+the only classical I/O — a genuine iterative solve, **not** a parallel
+classical integrator, so the method is pure-quantum (PQ) in the time
+loop. Sign recovery for the (signed) velocity uses an interferometric
+Hadamard test (shadow-free; signs propagate from the IC), one extra
+circuit per segment.
+
+**Knob arguments.**
+
+| Flag | Meaning |
+|---|---|
+| `--lcu-taylor-order M` | Taylor truncation order for `exp(A_seg·dt)` (default 4) |
+| `--segment-size k` | Steps the coefficient is frozen before refresh; `k=1` refreshes every step (most accurate, most measurements). Shots: `n_steps % k == 0` (use `--auto-cadence`) |
+| `--bond-dim χ` | MPS-of-`u` truncation at each reprepare (`None` = full rank) |
+| `--shots S` | `0` = statevector; `>0` = shots + ancilla post-selection |
+| `--sign-recovery` | `none` (magnitudes), `classical_oracle` (diagnostic), `hadamard_test` (shadow-free). `dual_rail` not yet implemented |
+| `--auto-cadence` | Align `--segment-size`/`--save-every` to a divisor of `n_steps` (shots divisibility) |
+| `--bc periodic` | Periodic baseline (Dirichlet is future work) |
+| `--seed`, `--optimization-level`, `--backend-type` | Standard shots-path controls |
+
+**Scaling.** The flattened dense-SELECT term count grows with Taylor
+order (`K ≈ 37/167/680` at order 2/3/4, q-independent), and the
+block-encoding subnormalization `λ ≈ exp(T_segment·λ_A)`,
+`λ_A ~ nu/dx² + ½‖u‖∞/dx`, caps post-selection success at `~1/λ²`. The
+structured (Berry–Childs–Kothari) encoder that breaks the term-count
+wall and yields honest gate counts is future work (SPEC §7, M4b).
 
 ---
 

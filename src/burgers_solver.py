@@ -204,7 +204,7 @@ if __name__ == "__main__":
         choices=[
             "shift", "quantum_exact", "quantum_circuit", "mps",
             "tebd", "tebd_circuit", "cole_hopf",
-            "cole_hopf_circuit", "lbm", "qlbm_circuit",
+            "cole_hopf_circuit", "lbm", "qlbm_circuit", "direct_lcu",
         ],
         help=(
             "Evolution method.  Classical: shift (FTCS), tebd, "

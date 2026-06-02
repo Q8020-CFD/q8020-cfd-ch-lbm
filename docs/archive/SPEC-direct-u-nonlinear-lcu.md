@@ -131,16 +131,94 @@ limiter (§8).
   reference step of `nu*u_xx - (1/2)*d/dx(u^2)` (same spatial
   discretization; Godunov flux for the shock-resolving cases) within
   Taylor tolerance.
+  *Status (done):* `advection_diffusion_taylor_lcu_terms` +
+  `conservative_burgers_lcu_step_circuit` in `burgers_lcu.py`.
+  Verified: `A@u` equals the conservative RHS to ~1e-15; the term sum
+  equals the truncated Taylor `P_M` to ~1e-15 and is real; the full
+  LCU circuit block reproduces `expm(A*dt)` to Taylor tolerance at
+  q=3,4,5.  **Finding:** unlike the heat path, the diagonal phases do
+  not collapse to net-shifts, so the flattened dense-SELECT term count
+  grows fast (K ~ 37 / 167 / ~680 at taylor_order 2 / 3 / 4,
+  q-independent), with `lambda ~ exp(dt*lambda_A)` and
+  `lambda_A ~ 1/dx^2`.  The flattened circuit is feasible only at
+  small `q*M` (validated at M=2 for q<=5); higher order needs the
+  nested encoder (M4).
 - **M2 -- Measure-reprepare loop (SV).** Direct-`u` measure-reprepare
   variant; sweep segment size `k`. Acceptance: frozen-coefficient
   error vs `k` characterized; full trajectory tracks FTCS within a
   stated tolerance for small `k`.
+  *Status (done):* `burgers_direct_lcu.py`
+  (`run_direct_lcu_simulation`) + `DirectLCUIntegrator` wired into
+  `burgers_fw.py` and `--method direct_lcu` in the solver.  SV path
+  applies the block-encoded operator
+  (`conservative_burgers_lcu_operator`) directly.  Verified at q=5,
+  nu=1e-2: k=1 matches the per-step expm reference to ~2e-12; frozen
+  error grows monotonically with k (1.6e-4 at k=2 -> 6.5e-3 at k=40);
+  Taylor convergence at k=1 (4.8e-7 / 1.1e-9 / 2.3e-12 for order
+  2/3/4).  End-to-end CLI verified incl. the `--bond-dim` MPS-of-`u`
+  truncation path.  M4 sweep TOML: `input/burgers_direct_lcu.toml`.
 - **M3 -- Shots path.** Reconstruction + post-selection; report
   per-segment success probability and circuit cost (depth/cx, honest
   metric-basis lowering).
-- **M4 -- Scaling sweep.** Push `q`, `k`, Taylor order; map where
-  success probability / depth / sim memory wall the method. This is
-  the "how far can it be pushed" deliverable.
+  *Status (done):* `_run_direct_lcu_shots` in `burgers_direct_lcu.py`,
+  routed from `run_direct_lcu_simulation` when shots>0 and wired
+  through `DirectLCUIntegrator` (backend + `--sign-recovery`).  One
+  segment-spanning block-encoding of `exp(A_seg*T_segment)` per
+  segment (A frozen); post-select ancilla=|0> via the shared
+  `post_select_counts`; magnitude reconstruct; renormalise by
+  `lambda*sqrt(p_success)`.  Requires `n_steps % segment_size == 0`
+  (same as CH measure_reprepare; use `--auto-cadence`).  Verified at
+  q=3,4: oracle-signed result converges to the statevector limit as
+  shots grow (rel err 3e-2 -> 3.7e-3 over 5k -> 500k), p_success and
+  lambda tracked, snapshots length n_steps+1.  Sign recovery: `none`
+  (magnitudes), `classical_oracle` (DIAGNOSTIC, signs from the dense
+  operator), and **`hadamard_test` (shadow-free)** all implemented;
+  `dual_rail` is a follow-up.  Hadamard recovery (`_direct_lcu_hadamard_
+  signs`) is the F9 interferometric test generalised to the
+  block-encoding -- ONE extra circuit per segment (not per-bin):
+  controlled-U_BE on a test ancilla against the signed reference,
+  post-select the block ancilla, sign = sign(p0-p1)*sign(ref); the
+  reference signs propagate from the IC each segment (no classical
+  RHS).  The controlled block-encoding is materialised as a dense
+  block_diag(I, U_BE) UnitaryGate (Aer can't assemble a controlled
+  composite) -- same trick as QLBM, sim-only, small-q.  Verified at
+  q=3 over 2 segments: sign agreement 1.00, recovers the sine's
+  negative lobe, n_circuits=2, converges to the SV limit with shots.
+  **Circuit depth/cx intentionally not synthesised:** the
+  flattened dense SELECT would Shannon-decompose to a meaningless
+  ~4^(q+m) cx count, so metrics record "unavailable"; honest gate
+  counts come from the structured encoder (M4).  Meaningful M3 scaling
+  indicators captured: `n_qubits`, `n_ancilla`, `lcu_lambda`,
+  `p_success`.  Shots sweeps added to `input/burgers_direct_lcu.toml`.
+- **M4a -- Scaling sweep (measurement; no new code).** Run
+  `input/burgers_direct_lcu.toml` and read off where the method
+  degrades.  The SV blocks map accuracy vs (q, taylor-order,
+  segment-size, bond-dim); the shots blocks map post-select
+  `p_success` vs (q, segment-size).  Runnable today on M1-M3 + the
+  Hadamard path -- this is the "how far can it be pushed" deliverable.
+- **M4b -- Structured (nested) encoder (the scaling fix; NEW -- the one
+  substantial remaining build).**  The flattened dense-SELECT word LCU
+  walls on two fronts M4b removes, plus one it can only soften:
+  1. **K-explosion (Taylor order).** Replace the flattened word list
+     (K ~ 37/167/680 at order 2/3/4, one giant dense SELECT) with the
+     Berry-Childs-Kothari truncated-Taylor structure: block-encode
+     `A_seg` ONCE from its 7 base terms, then apply it `m` times via a
+     compact PREPARE-over-powers + repeated controlled-SELECT.  Ancilla
+     becomes `O(a + log M)` instead of `O(log K)`; no dense word
+     expansion.  The single biggest piece.
+  2. **Honest gate counts.** Once SELECT is built from controlled-shift
+     (S+/S-) and controlled-diagonal (`diag(u_seg)`) primitives instead
+     of one dense `UnitaryGate`, the metric-basis depth/cx become real
+     structured numbers (today they Shannon-decompose to a meaningless
+     ~4^(q+m) and are recorded "unavailable").  Same work as (1).
+  3. **lambda / p_success wall (physics, not artifact).**
+     `lambda ~ exp(T_segment*lambda_A)`, `lambda_A ~ nu/dx^2 +
+     (1/2)*||u||_inf/dx`, so post-select success `~ 1/lambda^2`
+     collapses as `q` grows (smaller dx) or segments lengthen.
+     Intrinsic to a non-unitary block-encoded step; M4b can SOFTEN it
+     (oblivious amplitude amplification: `1/lambda^2 -> 1/lambda`;
+     shorter segments) but not remove it.  M4a characterises exactly
+     where it bites.
 
 ## 8. Scaling limiters (the "how far" experiment)
 
@@ -164,23 +242,34 @@ limiter (§8).
 - `test_lambda_success_probability` (M3): measured post-select rate
   matches `1/lambda^2` estimate within shot noise.
 
-## 10. Out of scope
+## 10. Future work (enumerated)
 
-- **Amplitude-loading diag(u) from a coherent oracle.** Superseded by
-  measure-reprepare's known-value diagonal; would re-introduce the
-  no-cloning problem. Not pursued.
-- **Gray encoding.** Optional extension; see `SPEC-encoding-switch.md`.
-- **Advective form `u*du/dx`** as an alternative to the conservative
-  baseline. Smooth-flow-only variant; same construction cost (factor
-  order swap). Implement behind a flag only if a non-conservative
-  comparison is wanted; not the baseline.
-- **QSP / qubitisation / Berry-Childs-Kothari** replacing first-order
-  Taylor. Future Hamiltonian-simulation upgrade.
-- **Variational QNPU (Lubasch).** The alternative nonlinear route;
-  different parcel.
-- **Fast-forwarding / Krylov amortization** of the per-segment
-  evolution. Future.
-- **Hardware execution.** Sim only in v1.
+Beyond M4b (the structured encoder, §7), in rough priority order:
+
+1. **`dual_rail` sign recovery.** Alternative to the implemented
+   `hadamard_test`: evolve `u = u+ - u-` on two non-negative rails and
+   recombine classically (2x circuits/segment, no interference).
+2. **Dirichlet BC.** Periodic (S+/S- wrap mod N) is the baseline;
+   Dirichlet via the paper's one-sided boundary treatment
+   (`shift_matrix` already supports `bc='dirichlet'`).
+3. **Hardware execution.** Sim only (AerSimulator) today; the dense
+   SELECT / controlled-block `UnitaryGate`s are sim-only and must be
+   replaced by the structured primitives (M4b) before any backend run.
+4. **Oblivious amplitude amplification** of the per-segment
+   post-selection (`1/lambda^2 -> 1/lambda`); pairs with M4b.
+5. **QSP / qubitisation** replacing the truncated-Taylor LCU -- a
+   higher Hamiltonian-simulation tier; significant theoretical depth.
+6. **Variational QNPU (Lubasch).** The alternative nonlinear route
+   (state carried in a variational ansatz); a different parcel.
+7. **Fast-forwarding / Krylov** amortization of the evolution across
+   segments.
+8. **Gray encoding.** Operator locality / lower MPS bond dim; see
+   `SPEC-encoding-switch.md`.
+9. **Advective form `u*du/dx`** behind a flag (smooth-flow-only
+   variant; same construction cost as the conservative baseline).
+10. **Amplitude-loading diag(u) from a coherent oracle.** Superseded by
+    measure-reprepare's known-value diagonal (would re-introduce
+    no-cloning); recorded as not-pursued.
 
 ## 11. Decisions and open questions
 
@@ -190,8 +279,12 @@ Decided:
    solution; same construction cost as advective. Advective is a
    demoted variant (§10).
 2. **BC: periodic baseline** (S+/S- wrap mod N). Dirichlet via the
-   paper's one-sided treatment is a follow-up.
+   paper's one-sided treatment is a follow-up (§10.2).
+3. **Time discretization: truncated Taylor**, matching the existing
+   `heat_taylor_lcu_terms`.  SV path applies the per-step
+   `exp(A_seg*dt)` operator `k` times; the shots path uses one
+   segment-spanning `exp(A_seg*T_segment)` block-encoding per segment
+   (A frozen, so both are exact in the frozen-A limit; only Taylor
+   truncation differs, set by `--lcu-taylor-order`).
 
-Open (decide at/before M1):
-3. **Time discretization:** first-order Taylor of `exp(A_seg dt)` per
-   step vs a single segment-spanning `exp(A_seg * k*dt)`.
+Open: none.

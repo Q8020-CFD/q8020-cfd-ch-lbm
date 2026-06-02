@@ -572,3 +572,177 @@ def heat_lcu_step_circuit(
         q, nu, dt, L_box, taylor_order=taylor_order,
     )
     return lcu_block_encoding(ops, coeffs, q)
+
+
+# ── Conservative Burgers generator: A = nu*L - (1/2)*G*diag(u) ───────
+#
+# Direct-u nonlinear path (SPEC-direct-u-nonlinear-lcu.md).  The
+# advection coefficient diag(u_seg) is classically known from the
+# measure-reprepare boundary, so it is decomposed into two diagonal
+# phase unitaries rather than block-encoded from a coherent oracle.
+# Dense-SELECT path -- intended for small q (M1 correctness); the
+# scalable nested encoder is M4.
+
+
+def _diag_phase_pair(
+    u_seg: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Write diag(u) = (s/2)*(W + W_dag), s = ||u||_inf.
+
+    W = diag(exp(i*arccos(u_i/s))) so (W + W_dag)/2 = diag(u_i/s),
+    i.e. diag(u) = s * diag(u_i/s).  Both W and W_dag are unitary.
+    """
+    s = float(np.max(np.abs(u_seg))) if u_seg.size else 0.0
+    N = u_seg.size
+    if s < 1e-300:
+        eye = np.eye(N, dtype=complex)
+        return eye, eye, 0.0
+    theta = np.arccos(np.clip(u_seg / s, -1.0, 1.0))
+    w = np.exp(1j * theta)
+    return np.diag(w), np.diag(np.conj(w)), s
+
+
+def _conservative_base_terms(
+    q: int,
+    nu: float,
+    L_box: float,
+    u_seg: np.ndarray,
+    bc: str = "periodic",
+) -> list[tuple[float, np.ndarray]]:
+    """Base LCU terms (coeff, unitary) for A = nu*L - (1/2)*G*diag(u).
+
+    L = (S+ + S- - 2I)/dx^2,  G = (S+ - S-)/(2 dx),
+    diag(u) = (s/2)(W + W_dag).  Conservative flux form:
+    (1/2) d/dx(u^2) = (1/2) G diag(u) u.
+
+    -(1/2) G diag(u) = -(s/(8 dx)) (S+ - S-)(W + W_dag).
+    """
+    N = 1 << q
+    dx = L_box / N
+    Sp = shift_matrix(N, +1, bc).astype(complex)
+    Sm = shift_matrix(N, -1, bc).astype(complex)
+    eye = np.eye(N, dtype=complex)
+    W, W_dag, s = _diag_phase_pair(u_seg)
+
+    c_lap = nu / dx**2
+    c_adv = -s / (8.0 * dx)
+    return [
+        (c_lap, Sp),
+        (c_lap, Sm),
+        (-2.0 * c_lap, eye),
+        (c_adv, Sp @ W),
+        (c_adv, Sp @ W_dag),
+        (-c_adv, Sm @ W),
+        (-c_adv, Sm @ W_dag),
+    ]
+
+
+def advection_diffusion_taylor_lcu_terms(
+    q: int,
+    nu: float,
+    dt: float,
+    L_box: float,
+    u_seg: np.ndarray,
+    taylor_order: int = 4,
+    bc: str = "periodic",
+) -> tuple[list[QuantumCircuit], np.ndarray]:
+    """Taylor-LCU terms for exp(A*dt), A = nu*L - (1/2)*G*diag(u_seg).
+
+    P_M = sum_{m=0}^{M} (dt^m/m!) A^m, with A = sum_k c_k U_k.  Words
+    are expanded iteratively as a dense-matrix dict (auto-dedup by the
+    resulting unitary), then wrapped as UnitaryGate circuits for
+    lcu_block_encoding.  Mirrors heat_taylor_lcu_terms but cannot
+    aggregate to pure net-shifts (diag(u) does not commute with S+/-).
+
+    Returns (operators, coefficients) ready for lcu_block_encoding.
+    """
+    from qiskit.circuit.library import UnitaryGate
+
+    N = 1 << q
+    base = _conservative_base_terms(q, nu, L_box, u_seg, bc)
+    eye = np.eye(N, dtype=complex)
+
+    def key(mat: np.ndarray) -> bytes:
+        return np.round(mat, 9).astype(complex).tobytes()
+
+    # result accumulates P_M; cur tracks A^m.  Values: [coeff, matrix].
+    result: dict[bytes, list] = {key(eye): [1.0, eye]}
+    cur: dict[bytes, list] = {key(eye): [1.0, eye]}
+
+    for m in range(1, taylor_order + 1):
+        nxt: dict[bytes, list] = {}
+        for c_prev, m_prev in cur.values():
+            for c_b, u_b in base:
+                m_new = m_prev @ u_b
+                c_new = c_prev * c_b
+                k = key(m_new)
+                if k in nxt:
+                    nxt[k][0] += c_new
+                else:
+                    nxt[k] = [c_new, m_new]
+        cur = nxt
+        scal = dt**m / math.factorial(m)
+        for k, (c, mat) in cur.items():
+            if k in result:
+                result[k][0] += scal * c
+            else:
+                result[k] = [scal * c, mat]
+
+    ops: list[QuantumCircuit] = []
+    coeffs: list[float] = []
+    for c, mat in result.values():
+        if abs(c) < 1e-30:
+            continue
+        qc = QuantumCircuit(q)
+        qc.append(UnitaryGate(mat), list(range(q)))
+        ops.append(qc)
+        coeffs.append(float(np.real(c)))
+    return ops, np.array(coeffs)
+
+
+def conservative_burgers_lcu_step_circuit(
+    q: int,
+    nu: float,
+    dt: float,
+    L_box: float,
+    u_seg: np.ndarray,
+    taylor_order: int = 4,
+    bc: str = "periodic",
+) -> tuple[QuantumCircuit, float]:
+    """Block-encode exp(A*dt)/lambda for the conservative Burgers
+    generator A = nu*L - (1/2)*G*diag(u_seg).
+
+    Returns (circuit, lambda); post-select ancilla=|0>^m for
+    P_M / lambda applied to the system register.
+    """
+    ops, coeffs = advection_diffusion_taylor_lcu_terms(
+        q, nu, dt, L_box, u_seg, taylor_order=taylor_order, bc=bc,
+    )
+    return lcu_block_encoding(ops, coeffs, q)
+
+
+def conservative_burgers_lcu_operator(
+    q: int,
+    nu: float,
+    dt: float,
+    L_box: float,
+    u_seg: np.ndarray,
+    taylor_order: int = 4,
+    bc: str = "periodic",
+) -> np.ndarray:
+    """Dense block-encoded operator P_M = sum_k c_k U_k ~= exp(A*dt).
+
+    Equals the top-left block of
+    `conservative_burgers_lcu_step_circuit` times lambda (verified to
+    ~1e-15), assembled directly from the LCU terms.  Used by the
+    statevector driver to avoid materialising the full (q+m)-qubit
+    unitary, whose size blows up with the term count at high order.
+    """
+    N = 1 << q
+    ops, coeffs = advection_diffusion_taylor_lcu_terms(
+        q, nu, dt, L_box, u_seg, taylor_order=taylor_order, bc=bc,
+    )
+    out = np.zeros((N, N), dtype=complex)
+    for c, op in zip(coeffs, ops):
+        out += c * Operator(op).data
+    return out

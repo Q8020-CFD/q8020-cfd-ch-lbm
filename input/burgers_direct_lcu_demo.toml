@@ -1,0 +1,51 @@
+# Direct-u nonlinear LCU demo: SV vs shots(+Hadamard) vs classical
+# SPEC-direct-u-nonlinear-lcu.md.  Two direct_lcu runs on the same grid
+# and physics, overlaid by an animated GIF against a recomputed Godunov
+# reference (entropy-satisfying, shock-capturing).
+#
+# Run: q8020-sweep q8020-mps-burgers/input/burgers_direct_lcu_demo.toml
+#
+# direct_lcu solves Burgers in conservative form by evolving u directly
+# under the frozen-coefficient generator A = nu*L - (1/2)*G*diag(u),
+# refreshed every segment from the measured state (measure-reprepare,
+# no classical shadow).  Knobs: --lcu-taylor-order, --segment-size,
+# --bond-dim, --shots, --sign-recovery {none,classical_oracle,
+# hadamard_test}.
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true   # GIF recomputes its own Godunov ref
+"--method" = "direct_lcu"
+"--q" = 5
+"--nu" = 0.05
+"--cfl" = 0.1
+"--shock-pct" = 50.0
+"--bc" = "periodic"
+"--ic" = "sine"
+"--ic-amplitude" = 0.4
+"--source" = "none"
+
+# Statevector (ideal quantum): smooth per-step movie, the animation
+# anchor (defines the timeline the shots run is sampled onto).
+[direct_lcu_sv]
+"--shots" = 0
+"--lcu-taylor-order" = 3
+"--segment-size" = 5
+"--save-every" = 1
+
+# Shots + measure-reprepare + shadow-free Hadamard sign recovery.
+# taylor-order 2 keeps the per-segment block-encoding ancilla small
+# (the Hadamard test's controlled block-encoding is a dense gate, so
+# width matters).  --auto-cadence aligns segment-size to a divisor of
+# n_steps (the shots path requires n_steps % segment_size == 0).
+[direct_lcu_shots]
+"--shots" = 50000
+"--lcu-taylor-order" = 2
+"--sign-recovery" = "hadamard_test"
+"--auto-cadence" = true
+"--seed" = 7
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor direct_lcu_sv --ref godunov --no-ic"]

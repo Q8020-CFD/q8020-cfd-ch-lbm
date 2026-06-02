@@ -132,6 +132,10 @@ METHOD_STYLE = {
         'color': '#d62728', 'ls': '-', 'lw': 2.0,
         'label': 'LBM circuit (hybrid, Option A)',
     },
+    'direct_lcu': {
+        'color': '#8c564b', 'ls': '-', 'lw': 2.0,
+        'label': 'Direct-u LCU (conservative)',
+    },
 }
 
 
