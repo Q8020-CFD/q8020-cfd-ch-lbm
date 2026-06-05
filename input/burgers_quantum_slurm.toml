@@ -1,0 +1,1200 @@
+# Burgers 1D Quantum Solver Sweep
+#
+# This is a max-case TOML - we've since broken out into separate TOMLs for per-case 
+# clarity, but this kept for reference.
+#
+# Run: q8020-sweep q8020-mps-burgers/input/burgers_quantum.toml
+#
+# shock_pct=63.0 → T_end ≈ 0.1006 (63% of t_shock = 1/2π ≈ 0.1592)
+# n_steps = T_end / (CFL * dx) = T_end * N / CFL   (CFL = Courant-Friedrichs-Lewy number)
+#
+# NOTE: periodic BC uses endpoint=False → dx=1/N; Dirichlet uses
+# endpoint=True → dx=1/(N-1).  At the same q, dt=cfl*dx differs slightly
+# between the two, so cross-BC comparisons are at different physical times.
+#   q=3 N=8:   n_steps ≈ 8
+#   q=4 N=16:  n_steps ≈ 16
+#   q=5 N=32:  n_steps ≈ 32
+#   q=6 N=64:  n_steps ≈ 64
+#   q=7 N=128: n_steps ≈ 128
+#   q=8 N=256: n_steps ≈ 256
+
+[global]
+_output_dir = "/lustre/orion/ard189/scratch/ishangore/burgers_quantum"
+_inject_outdir = "--outdir"
+_env = "./q8020-mps-burgers/.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+
+_slurm = true
+_slurm_project = "ard189"
+_slurm_pack_venvs = ["./q8020-mps-burgers/.venv"]
+_slurm_partition = "extended"
+_slurm_walltime = "24:00:00"
+_slurm_cores_per_task = 1
+_slurm_cores_per_node = 64
+_slurm_exclusive_node = false
+_run_mode = "parallel"
+_trials = 1
+_case_timeout = 82800   # 23 hours; leaves 1h margin
+
+
+"--noshow" = true
+"--nu" = 1e-4
+"--cfl" = 0.1
+"--ic" = "sine"
+"--source" = "sine"
+
+# ── Paper-aligned runs (Meena et al. AIAA 2026) ───────
+# Matches the paper exactly: Dirichlet BCs, sine IC,
+# time-varying source, nu=1e-4, CFL=0.1, 100% shock time.
+# These are the "gold standard" runs for q=3..6.
+
+[paper_classical_q3]
+"--q" = 3
+"--shock-pct" = 100.0
+"--method" = "shift"
+"--bc" = "dirichlet"
+"--save-every" = 2
+
+[paper_classical_q4]
+"--q" = 4
+"--shock-pct" = 100.0
+"--method" = "shift"
+"--bc" = "dirichlet"
+"--save-every" = 4
+
+[paper_classical_q5]
+"--q" = 5
+"--shock-pct" = 100.0
+"--method" = "shift"
+"--bc" = "dirichlet"
+"--save-every" = 8
+
+[paper_qexact_q3]
+"--q" = 3
+"--shock-pct" = 100.0
+"--method" = "quantum_exact"
+"--bc" = "dirichlet"
+"--save-every" = 2
+
+[paper_qexact_q4]
+"--q" = 4
+"--shock-pct" = 100.0
+"--method" = "quantum_exact"
+"--bc" = "dirichlet"
+"--save-every" = 4
+
+[paper_qexact_q5]
+"--q" = 5
+"--shock-pct" = 100.0
+"--method" = "quantum_exact"
+"--bc" = "dirichlet"
+"--save-every" = 8
+
+[paper_qcircuit_q3]
+"--q" = 3
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "dirichlet"
+"--save-every" = 2
+
+[paper_qcircuit_q4]
+"--q" = 4
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "dirichlet"
+"--save-every" = 4
+
+[paper_qcircuit_q5]
+"--q" = 5
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "dirichlet"
+"--save-every" = 8
+
+# ── Paper-aligned with shots (production runs) ────────
+# q=5,6 with 150k shots, 100% shock — the main experimental runs.
+# _group_postproc generates the comparison plot automatically.
+
+[paper_qcircuit_q5_shots150k]
+"--q" = 5
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "dirichlet"
+"--shots" = 150000
+"--save-every" = 8
+
+# ── Paper-aligned MPS runs (production) ───────────────
+# Full pipeline: MPS state-prep + Pauli Hamiltonian evolution.
+# Dirichlet BCs, 100% shock, 150k shots, bond_dim sweep.
+
+[paper_mps_q5_shots150k]
+"--q" = 5
+"--shock-pct" = 100.0
+"--method" = "mps"
+"--bc" = "dirichlet"
+"--bond-dim" = [1, 2, 4]
+"--shots" = 150000
+"--save-every" = 8
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_paper_aligned.py"]
+
+# ── Hadamard-test time evolution sweep ────────────────────────────────────
+# Sweeps shock_pct from early-time through shock formation and into the
+# dissipative regime.  The animation picks the longest run (200%) and
+# shows the full pre→through→post shock evolution.
+
+[hadamard_sine_sweep_q5]
+"--q" = 5
+"--shock-pct" = [10.0, 25.0, 50.0, 75.0, 100.0, 125.0, 150.0, 200.0]
+"--method" = "quantum_circuit"
+"--bc" = "dirichlet"
+"--shots" = 150000
+"--sign-recovery" = "hadamard_test"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolution.py"]
+
+# ── Multi-mode Fourier IC (NOT Burgers turbulence) ────────────────────────
+# Four-mode random-phase IC (A_k ~ 1/k, fixed seed) produces multiple
+# shocks which form, interact, and merge.  This is a single deterministic
+# field, not a statistical ensemble, so it is NOT Burgulence -- just a
+# complex IC that exercises multi-shock dynamics.  See F11 in the
+# implementation plan for a genuine Burgulence study.  Uses q=5 (N=32)
+# for reasonable runtime.  No source term -- decaying.
+# Single shock_pct since the animation only uses the longest case anyway.
+
+# ── F2 TEBD (classical MPS/MPO evolution) ────────────────────────────────
+# Dense-H -> MPO -> MPS path (Phase A).  Mirrors paper_qexact_q* params for
+# fairness of comparison, but switches to periodic BC since the TEBD MPO
+# is constructed from periodic shift operators.  Statevector (no shots).
+
+[tebd_q3]
+"--q" = 3
+"--shock-pct" = 100.0
+"--method" = "tebd"
+"--bc" = "periodic"
+"--save-every" = 2
+
+[tebd_q4]
+"--q" = 4
+"--shock-pct" = 100.0
+"--method" = "tebd"
+"--bc" = "periodic"
+"--save-every" = 4
+
+[tebd_q5]
+"--q" = 5
+"--shock-pct" = 100.0
+"--method" = "tebd"
+"--bc" = "periodic"
+"--save-every" = 8
+
+[tebd_q6]
+"--q" = 6
+"--shock-pct" = 100.0
+"--method" = "tebd"
+"--bc" = "periodic"
+"--save-every" = 16
+
+# ── F10 Cole-Hopf + TEBD (heat-equation transformed) ─────────────────────
+# Fixed propagator MPO, phi > 0 everywhere (no sign recovery needed).
+# nu=1e-2 is required: the default global nu=1e-4 overflows float64 in the
+# Cole-Hopf forward transform (phi = exp(-integral/(2 nu))).  See F10 spec.
+
+[cole_hopf_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 2
+
+[cole_hopf_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 4
+
+[cole_hopf_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 8
+
+[cole_hopf_q6]
+"--q" = 6
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 16
+
+# ── F10 Cole-Hopf circuit (quantum propagator, statevector) ───────────────
+# QFT-diagonal propagator (default): periodic BC, nu=1e-2, statevector.
+# Matches cole_hopf_q* params for direct comparison.
+
+[cole_hopf_circuit_qft_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 2
+
+[cole_hopf_circuit_qft_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 4
+
+[cole_hopf_circuit_qft_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 8
+
+# Dense-block propagator (exact eigendecomposition): q <= 5.
+
+[cole_hopf_circuit_dense_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 2
+
+[cole_hopf_circuit_dense_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 4
+
+# P-G smoke: MPS bond-dim sweep at q=4, SV (shots=0), friendly nu.
+# Fast (<30s) end-to-end check that --bond-dim truncates visibly
+# through the Ran 2020 prep pipeline.
+[cole_hopf_circuit_mps_q4_smoke]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "periodic"
+"--source" = "none"
+"--bond-dim" = [1, 2, 4]
+"--shots" = 0
+"--save-every" = 4
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_mps_q5_smoke]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 400.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "periodic"
+"--source" = "none"
+"--bond-dim" = [1, 4, 8]
+"--shots" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_dense_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 8
+
+# ── F10 Cole-Hopf circuit animation ──────────────────────────────────────
+# Saves every step for smooth GIF animation.  q=4 keeps runtime short.
+
+[cole_hopf_circuit_anim_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_anim_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_anim_q6]
+"--q" = 6
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# Well-conditioned comparison: higher nu reduces inverse-transform sensitivity,
+# lower CFL reduces FTCS numerical diffusion.  Circuit, MPS, and FTCS should
+# nearly overlap — isolates true circuit error clearly.
+[cole_hopf_circuit_anim_q5_wellcond]
+"--q" = 5
+"--nu" = 0.1
+"--cfl" = 0.02
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# Multimode IC: 4-mode random-phase Fourier IC produces multiple shocks
+# forming, interacting, and merging.  More interesting dynamics than sine.
+# nu=0.05 balances visible nonlinearity with stable inverse transform.
+[cole_hopf_circuit_anim_multimode_q5]
+"--q" = 5
+"--nu" = 0.05
+"--cfl" = 0.05
+"--shock-pct" = 150.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bc" = "periodic"
+"--source" = "none"
+"--ic" = "multimode"
+"--ic-modes" = 4
+"--ic-seed" = 42
+"--ic-alpha" = 1.0
+"--shots" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# Shots version: per-step circuits → full animation with shot noise visible.
+# q=4 + save-every=2 keeps runtime manageable (~1-2 min).
+[cole_hopf_circuit_anim_q4_shots]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 100000
+"--save-every" = 2
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# ── F10 Paper-scale small-nu Dirichlet (spec §11.6) ──────────────────────
+# nu=1e-4, bc=dirichlet, shots=150k.  Uses dense-block (handles Dirichlet
+# via Neumann-on-phi).  Exercises the small-nu centering code path (§9).
+
+[paper_cole_hopf_circuit_q3_shots150k]
+"--q" = 3
+"--nu" = 1e-4
+"--shock-pct" = 80.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--shots" = 150000
+"--save-every" = 2
+
+[paper_cole_hopf_circuit_q4_shots150k]
+"--q" = 4
+"--nu" = 1e-4
+"--shock-pct" = 80.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--shots" = 150000
+"--save-every" = 4
+
+[paper_cole_hopf_circuit_q5_shots150k]
+"--q" = 5
+"--nu" = 1e-4
+"--shock-pct" = 80.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--shots" = 150000
+"--save-every" = 8
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# MPS bond-dim sweep on the paper config: truncate at bd=1,2,4 and
+# compare to the full-rank curve (Ran 2020 prep pipeline, P-G).
+[paper_cole_hopf_circuit_q5_shots150k_mps]
+"--q" = 5
+"--nu" = 1e-4
+"--shock-pct" = 80.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--shots" = 150000
+"--bond-dim" = [1, 2, 4]
+"--save-every" = 8
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# ── F2 Phase B.2 tebd_circuit (qiskit statevector) ───────────────────────
+# Circuit version of TEBD. Wraps Zaletel W-II gates into a Qiskit circuit
+# and executes on statevector. CURRENTLY: unitarity PASS but O(1) error
+# floor (~0.97 at q=3) — exposes the ladder-MPO gap (Phase B.1 X2).
+# Small q only: qubit count = q + n_ancilla, ancilla grows with H bond dim.
+
+[tebd_circuit_q3]
+"--q" = 3
+"--shock-pct" = 100.0
+"--method" = "tebd_circuit"
+"--bc" = "periodic"
+"--save-every" = 2
+
+[tebd_circuit_q4]
+"--q" = 4
+"--shock-pct" = 100.0
+"--method" = "tebd_circuit"
+"--bc" = "periodic"
+"--save-every" = 4
+
+[hadamard_multimode_q5]
+"--q" = 5
+"--shock-pct" = 150.0
+"--method" = "quantum_circuit"
+"--bc" = "dirichlet"
+"--shots" = 150000
+"--sign-recovery" = "hadamard_test"
+"--ic" = "multimode"
+"--ic-modes" = 4
+"--ic-seed" = 42
+"--ic-alpha" = 1.0
+"--source" = "none"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolution.py"]
+
+# ── E-1 Gray-encoding dense-block (encoding A/B comparison) ─────────────────
+# Matches cole_hopf_circuit_dense_q* params exactly, adding --encoding gray.
+# Should produce identical u(x,T) to the binary dense-block runs (sanity gate).
+
+[cole_hopf_circuit_gray_dense_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--encoding" = "gray"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 2
+
+[cole_hopf_circuit_gray_dense_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--encoding" = "gray"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 4
+
+[cole_hopf_circuit_gray_dense_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--encoding" = "gray"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 8
+
+# ── F-source: forced Cole-Hopf circuit (heat + potential) ────────────────────
+# Sine source via Cole-Hopf potential V(x,t).  dense-block only (qft-diagonal
+# needs Strang splitting, deferred).  nu=0.1 keeps phi well-conditioned.
+
+[cole_hopf_circuit_forced_q5_smoke]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--q" = 5
+"--shots" = 50000
+"--backend-type" = "sim"
+"--seed" = 42
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_forced_q5_anim]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 1000.0
+"--q" = 5
+"--shots" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_forced_q5_shots]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 1000.0
+"--q" = 5
+"--shots" = 150000
+"--backend-type" = "sim"
+"--seed" = 42
+"--optimization-level" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# Smoke-sized sibling: 10x shorter horizon (shock-pct=100 -> n_steps~51),
+# 50k shots, opt-level 0.  Use this to confirm the forced shots path works
+# end-to-end before committing to the deep _shots case overnight.
+[cole_hopf_circuit_forced_q5_shots100]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--q" = 5
+"--shots" = 50000
+"--backend-type" = "sim"
+"--seed" = 42
+"--optimization-level" = 0
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# ── LCU propagator (F3, pure-quantum CH-LCU) ─────────────────────────────────
+
+# SV smoke: LCU propagator, unforced, q=5, n_steps=51 (shock_pct=100).
+# Acceptance: final L2 vs FTCS < 0.05; matches dense-block within 0.02.
+[cole_hopf_circuit_lcu_smoke_q5]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--ic" = "sine"
+"--source" = "none"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--q" = 5
+"--shots" = 0
+"--bc" = "periodic"
+"--lcu-taylor-order" = 4
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# ── Measure-and-reprepare (segmented) evolution ─────────────────────────────────────────────────────────
+
+# Shock-resolving: nu=0.05, past shock time (196% -> 100 steps).
+# 5 segments of 20 steps, 500k shots, phi_modes=6.
+[cole_hopf_circuit_forced_q5_chunked_shock]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.05
+"--cfl" = 0.1
+"--shock-pct" = 196.0
+"--q" = 5
+"--shots" = 500000
+"--backend-type" = "sim"
+"--seed" = 42
+"--optimization-level" = 0
+"--save-every" = 20
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 20
+"--phi-modes" = 6
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_forced_q5_chunked_smoke]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 98.0
+"--q" = 5
+"--shots" = 50000
+"--backend-type" = "sim"
+"--seed" = 42
+"--optimization-level" = 0
+"--save-every" = 10
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+"--phi-modes" = 4
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_forced_q5_chunked_deep]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--n-steps" = 510
+"--q" = 5
+"--shots" = 100000
+"--backend-type" = "sim"
+"--seed" = 42
+"--optimization-level" = 0
+"--save-every" = 10
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+"--phi-modes" = 4
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# ── Shots / backend smoke tests ──────────────────────────────────────────────
+
+[cole_hopf_circuit_shots_smoke_ideal]
+"--method" = "cole_hopf_circuit"
+"--q" = 4
+"--shots" = 4096
+"--backend-type" = "sim"
+"--n-steps" = 4
+"--cfl" = 0.1
+"--propagator" = "qft-diagonal"
+
+[cole_hopf_circuit_shots_smoke_noisy]
+"--method" = "cole_hopf_circuit"
+"--q" = 4
+"--shots" = 4096
+"--backend-type" = "sim"
+"--t1" = 50
+"--t2" = 70
+"--n-steps" = 4
+"--cfl" = 0.1
+"--propagator" = "qft-diagonal"
+
+[cole_hopf_circuit_shots_q5]
+"--method" = "cole_hopf_circuit"
+"--q" = 5
+"--shots" = 2048
+"--backend-type" = "sim"
+"--n-steps" = 2
+"--cfl" = 0.1
+"--propagator" = "qft-diagonal"
+"--save-every" = 1
+
+[cole_hopf_circuit_shots_q5_anim]
+"--method" = "cole_hopf_circuit"
+"--q" = 5
+"--nu" = 0.1
+"--shots" = 100000
+"--shock-pct" = 100.0
+"--backend-type" = "sim"
+"--seed" = 42
+"--propagator" = "qft-diagonal"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+[cole_hopf_circuit_shots_q5_shock]
+"--method" = "cole_hopf_circuit"
+"--q" = 5
+"--nu" = 0.05
+"--shots" = 100000
+"--shock-pct" = 200.0
+"--backend-type" = "sim"
+"--seed" = 42
+"--propagator" = "qft-diagonal"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# ── F3 LCU propagator (Cole-Hopf circuit, Taylor block-encoding) ────────────
+# Variant 1.B: --propagator lcu for cole_hopf_circuit method.
+# Periodic BC, statevector path.  Matches cole_hopf_circuit_dense_q* for
+# direct comparison (LCU Taylor vs dense-block expm).
+# (Unforced q=5 smoke is `cole_hopf_circuit_lcu_smoke_q5` defined earlier
+#  in the LCU block; do not redefine here.)
+
+[cole_hopf_circuit_lcu_q3]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--ic" = "sine"
+"--source" = "none"
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--q" = 3
+"--shots" = 0
+"--bc" = "periodic"
+"--lcu-taylor-order" = 4
+"--save-every" = 2
+
+[cole_hopf_circuit_lcu_q4]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--ic" = "sine"
+"--source" = "none"
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--q" = 4
+"--shots" = 0
+"--bc" = "periodic"
+"--lcu-taylor-order" = 4
+"--save-every" = 4
+
+# Forced LCU fast smoke: q=3, statevector, ~10s.  Sanity-check
+# that the Strang sandwich produces a sensible forced trajectory.
+[cole_hopf_circuit_lcu_forced_q3_fast]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--q" = 3
+"--shots" = 0
+"--bc" = "periodic"
+"--lcu-taylor-order" = 4
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# Forced LCU smoke: paper-case sine forcing at q=5.
+# Acceptance: final L2 vs FTCS forced < 0.10; per-step p_success > 0.7.
+[cole_hopf_circuit_lcu_forced_q5]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--q" = 5
+"--shots" = 0
+"--bc" = "periodic"
+"--lcu-taylor-order" = 4
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# Forced LCU + segmented shots: end-to-end realism.
+# Acceptance: final L2 vs FTCS forced < 0.15.
+# n_steps must be divisible by segment_size; override shock-pct
+# derivation (which gives 51) with an explicit --n-steps 50.
+[cole_hopf_circuit_lcu_forced_chunked_q5]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--ic" = "sine"
+"--source" = "sine"
+"--nu" = 0.1
+"--cfl" = 0.1
+"--n-steps" = 50
+"--q" = 5
+"--shots" = 100000
+"--backend-type" = "sim"
+"--seed" = 42
+"--optimization-level" = 0
+"--bc" = "periodic"
+"--lcu-taylor-order" = 4
+"--save-every" = 10
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+
+# ── Paper-scale Dirichlet BC + dense-block method ────────────────────────────
+# Statevector (q=5..7) and 150k-shot (q=5..6) runs.
+# dense-block handles Dirichlet via Neumann-on-phi; nu=0.01 keeps phi
+# well-conditioned; n_steps=50 gives a fixed short time horizon.
+
+[dirichlet_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--save-every" = 8
+
+[dirichlet_q6]
+"--q" = 6
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--save-every" = 16
+
+[dirichlet_q7]
+"--q" = 7
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--save-every" = 16
+
+[dirichlet_shots_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--shots" = 150000
+"--save-every" = 8
+
+[dirichlet_shots_q6]
+"--q" = 6
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 50
+"--shots" = 150000
+"--save-every" = 16
+
+# ── F2 Phase B.1 TEBD-circuit fast runs (n-steps=10, nu=1e-2) ────────────────
+# Names differ from tebd_q4/tebd_q5 (tebd method) and tebd_circuit_q4
+# (shock-pct=100 run) to avoid TOML duplicate-key errors.
+
+[tebd_circuit_fast_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 2
+
+[tebd_circuit_fast_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 4
+
+[tebd_circuit_strang_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--splitting" = "strang"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 2
+
+[tebd_circuit_strang_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "tebd_circuit"
+"--splitting" = "strang"
+"--n-steps" = 10
+"--cfl" = 0.1
+"--noshow" = true
+"--save-every" = 4
+
+# ── F10-10 MPS bond-dim sweep (statevector) ──────────────────────────────────
+# chi = bond dimension; q=4 (N=16) and q=5 (N=32).
+# Dirichlet BC, nu=1e-2 (stable forward transform), no source, n-steps=5.
+# Acceptance: all runs complete without error; fidelity tested by F10-11.
+
+[mps_bond_q4_chi4]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 4
+"--noshow" = true
+
+[mps_bond_q4_chi8]
+"--q" = 4
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 8
+"--noshow" = true
+
+[mps_bond_q5_chi4]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 4
+"--noshow" = true
+
+[mps_bond_q5_chi8]
+"--q" = 5
+"--nu" = 1e-2
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--n-steps" = 5
+"--bond-dim" = 8
+"--noshow" = true
+
+# ── Pure quantum pathway comparison (q=5, Dirichlet, unforced) ──────────────
+# Matched pair: same IC, BC, nu, grid, time horizon.  Differs only in algorithm.
+# Run both, then the postproc overlays them + classical Godunov/FTCS reference.
+# nu=1e-2 keeps Cole-Hopf forward transform well-conditioned (Re=100).
+# save-every=1 for full movie.  shock-pct=100 → T_end = t_shock.
+
+[pq_compare_q5_trotter]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "dirichlet"
+"--source" = "none"
+"--ic" = "sine"
+"--shots" = 0
+"--save-every" = 1
+
+[pq_compare_q5_cole_hopf]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf_circuit"
+"--propagator" = "lcu"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--ic" = "sine"
+"--shots" = 0
+"--save-every" = 1
+"--lcu-taylor-order" = 4
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
+
+# ── Method comparison: Trotter vs Cole-Hopf vs LBM at q=5 ────────────────────
+# Same IC (sine, amplitude=0.3 for LBM stability: D1Q3 requires Ma < 1),
+# periodic BC, nu=1e-2, source=none, shock_pct=100.
+# Godunov baseline (shock-capturing, conservative) as classical reference.
+
+[method_compare_q5_trotter]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "periodic"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+
+[method_compare_q5_cole_hopf]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+
+[method_compare_q5_lbm]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "lbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
+
+# ── Method comparison v2: all-three-compatible ────────────────────────────────
+# PT + Cole-Hopf + LBM on the same IC/BC/nu.
+# Constraints: periodic (CH only), nu>=1e-3 (CH float64), amp<1 (LBM Ma).
+# Verified standalone: all three produce clean, non-oscillating results.
+
+[method_compare_v2_trotter]
+"--q" = 5
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--method" = "quantum_circuit"
+"--trotter-order" = 1
+"--trotter-reps" = 5
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+"--shots" = 0
+
+[method_compare_v2_cole_hopf]
+"--q" = 5
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--method" = "cole_hopf"
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+
+[method_compare_v2_lbm]
+"--q" = 5
+"--nu" = 1e-2
+"--cfl" = 0.1
+"--shock-pct" = 100.0
+"--method" = "lbm"
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--classical-baseline" = "godunov"
+"--save-every" = 1
+_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
+
+# ── F11 QLBM (Quantum Lattice Boltzmann) ─────────────────────────────────────
+# D1Q3 stencil, BGK collision, periodic streaming.
+# nu=1e-2 keeps tau well above 0.5 (stable regime).
+
+[lbm_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "lbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 2
+
+[lbm_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "lbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 4
+
+[lbm_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "lbm"
+"--bc" = "periodic"
+"--source" = "none"
+"--save-every" = 8
+
+# QLBM circuit (statevector, Option A dense collision)
+[qlbm_circuit_q3]
+"--q" = 3
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 2
+
+[qlbm_circuit_q4]
+"--q" = 4
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 4
+
+[qlbm_circuit_q5]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "periodic"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 8
+
+# QLBM Dirichlet (bounce-back BCs)
+[lbm_q5_dirichlet]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "lbm"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--save-every" = 8
+
+[qlbm_circuit_q5_dirichlet]
+"--q" = 5
+"--nu" = 1e-2
+"--shock-pct" = 100.0
+"--method" = "qlbm_circuit"
+"--bc" = "dirichlet"
+"--source" = "none"
+"--shots" = 0
+"--save-every" = 8
+

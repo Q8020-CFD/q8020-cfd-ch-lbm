@@ -1,0 +1,47 @@
+# MPS vs. QLBM 
+# Gaussian-IC method-comparison sweep
+
+[global]
+_output_dir = "/lustre/orion/ard189/scratch/ishangore/burgers_gaussian"#"~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+
+_slurm = true
+_slurm_project = "ard189"
+_slurm_pack_venvs = ["./.venv"]
+_slurm_walltime = "02:00:00"
+_run_mode = "parallel"
+_trials = 1
+
+_script = "python ../q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true   # GIF recomputes its own Godunov reference
+"--q" = 4                     # qubits = 4, 5, 6
+"--nu" = 1e-2                 # viscosity: 1e-2, 5e-3 (smaller nu need more q)
+"--cfl" = 0.1                 # time step control, smaller --> more steps
+"--shock-pct" = 150.0         # % of shock formation
+"--bc" = "dirichlet"          
+"--ic" = "gaussian"
+"--ic-amplitude" = 0.4        # within D1Q3 stability window
+"--ic-center" = 0.5
+"--ic-sigma" = 0.1
+"--source" = "none"
+"--shots" = 150000
+"--auto-cadence" = true       # compute CH segment-size & movie save-every
+# Uncapped circuit-metric transpile: this is an analysis sweep, so let the
+# depth/gate-count decomposition run to completion (still crash-safe -- it
+# runs in an isolated subprocess).  Set >0 to cap it on slower configs.
+"--metric-transpile-timeout" = 0
+
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--sign-recovery" = "none"    # gaussian doesn't expose the sign problem
+
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "dense-block"       
+"--evolution-mode" = "measure_reprepare"
+
+# Postproc: 2-panel animated GIF (u(x,t) + L2 error vs Godunov)
+_group_postproc = ["./.venv/bin/python ../q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --ref godunov --no-ic"]
