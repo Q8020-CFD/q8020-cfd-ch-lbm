@@ -22,7 +22,7 @@
 _output_dir = "/lustre/orion/ard189/scratch/ishangore/burgers_quantum"
 _inject_outdir = "--outdir"
 _env = "./q8020-mps-burgers/.venv"
-_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+_script = "./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/src/burgers_solver.py"
 
 _slurm = true
 _slurm_project = "ard189"
@@ -143,7 +143,7 @@ _case_timeout = 82800   # 23 hours; leaves 1h margin
 "--bond-dim" = [1, 2, 4]
 "--shots" = 150000
 "--save-every" = 8
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_paper_aligned.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_paper_aligned.py"]
 
 # ── Hadamard-test time evolution sweep ────────────────────────────────────
 # Sweeps shock_pct from early-time through shock formation and into the
@@ -158,7 +158,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_paper_aligned.py"]
 "--shots" = 150000
 "--sign-recovery" = "hadamard_test"
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolution.py"]
 
 # ── Multi-mode Fourier IC (NOT Burgers turbulence) ────────────────────────
 # Four-mode random-phase IC (A_k ~ 1/k, fixed seed) produces multiple
@@ -313,7 +313,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolu
 "--bond-dim" = [1, 2, 4]
 "--shots" = 0
 "--save-every" = 4
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_mps_q5_smoke]
 "--q" = 5
@@ -326,7 +326,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--bond-dim" = [1, 4, 8]
 "--shots" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_dense_q5]
 "--q" = 5
@@ -351,7 +351,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--source" = "none"
 "--shots" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_anim_q5]
 "--q" = 5
@@ -363,7 +363,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--source" = "none"
 "--shots" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_anim_q6]
 "--q" = 6
@@ -375,7 +375,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--source" = "none"
 "--shots" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # Well-conditioned comparison: higher nu reduces inverse-transform sensitivity,
 # lower CFL reduces FTCS numerical diffusion.  Circuit, MPS, and FTCS should
@@ -391,7 +391,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--source" = "none"
 "--shots" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # Multimode IC: 4-mode random-phase Fourier IC produces multiple shocks
 # forming, interacting, and merging.  More interesting dynamics than sine.
@@ -411,7 +411,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--ic-alpha" = 1.0
 "--shots" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # Shots version: per-step circuits → full animation with shot noise visible.
 # q=4 + save-every=2 keeps runtime manageable (~1-2 min).
@@ -425,7 +425,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--source" = "none"
 "--shots" = 100000
 "--save-every" = 2
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── F10 Paper-scale small-nu Dirichlet (spec §11.6) ──────────────────────
 # nu=1e-4, bc=dirichlet, shots=150k.  Uses dense-block (handles Dirichlet
@@ -463,7 +463,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--source" = "none"
 "--shots" = 150000
 "--save-every" = 8
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # MPS bond-dim sweep on the paper config: truncate at bd=1,2,4 and
 # compare to the full-rank curve (Ran 2020 prep pipeline, P-G).
@@ -478,7 +478,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--shots" = 150000
 "--bond-dim" = [1, 2, 4]
 "--save-every" = 8
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── F2 Phase B.2 tebd_circuit (qiskit statevector) ───────────────────────
 # Circuit version of TEBD. Wraps Zaletel W-II gates into a Qiskit circuit
@@ -513,7 +513,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--ic-alpha" = 1.0
 "--source" = "none"
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolution.py"]
 
 # ── E-1 Gray-encoding dense-block (encoding A/B comparison) ─────────────────
 # Matches cole_hopf_circuit_dense_q* params exactly, adding --encoding gray.
@@ -569,7 +569,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_hadamard_time_evolu
 "--backend-type" = "sim"
 "--seed" = 42
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_forced_q5_anim]
 "--method" = "cole_hopf_circuit"
@@ -582,7 +582,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--q" = 5
 "--shots" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_forced_q5_shots]
 "--method" = "cole_hopf_circuit"
@@ -598,7 +598,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--seed" = 42
 "--optimization-level" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # Smoke-sized sibling: 10x shorter horizon (shock-pct=100 -> n_steps~51),
 # 50k shots, opt-level 0.  Use this to confirm the forced shots path works
@@ -617,7 +617,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--seed" = 42
 "--optimization-level" = 0
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── LCU propagator (F3, pure-quantum CH-LCU) ─────────────────────────────────
 
@@ -636,7 +636,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--bc" = "periodic"
 "--lcu-taylor-order" = 4
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── Measure-and-reprepare (segmented) evolution ─────────────────────────────────────────────────────────
 
@@ -659,7 +659,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--evolution-mode" = "measure_reprepare"
 "--segment-size" = 20
 "--phi-modes" = 6
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_forced_q5_chunked_smoke]
 "--method" = "cole_hopf_circuit"
@@ -678,7 +678,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--evolution-mode" = "measure_reprepare"
 "--segment-size" = 10
 "--phi-modes" = 4
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_forced_q5_chunked_deep]
 "--method" = "cole_hopf_circuit"
@@ -697,7 +697,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--evolution-mode" = "measure_reprepare"
 "--segment-size" = 10
 "--phi-modes" = 4
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── Shots / backend smoke tests ──────────────────────────────────────────────
 
@@ -741,7 +741,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--seed" = 42
 "--propagator" = "qft-diagonal"
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 [cole_hopf_circuit_shots_q5_shock]
 "--method" = "cole_hopf_circuit"
@@ -753,7 +753,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--seed" = 42
 "--propagator" = "qft-diagonal"
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── F3 LCU propagator (Cole-Hopf circuit, Taylor block-encoding) ────────────
 # Variant 1.B: --propagator lcu for cole_hopf_circuit method.
@@ -803,7 +803,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--bc" = "periodic"
 "--lcu-taylor-order" = 4
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # Forced LCU smoke: paper-case sine forcing at q=5.
 # Acceptance: final L2 vs FTCS forced < 0.10; per-step p_success > 0.7.
@@ -820,7 +820,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--bc" = "periodic"
 "--lcu-taylor-order" = 4
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # Forced LCU + segmented shots: end-to-end realism.
 # Acceptance: final L2 vs FTCS forced < 0.15.
@@ -844,7 +844,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--save-every" = 10
 "--evolution-mode" = "measure_reprepare"
 "--segment-size" = 10
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_evolution.py"]
 
 # ── Paper-scale Dirichlet BC + dense-block method ────────────────────────────
 # Statevector (q=5..7) and 150k-shot (q=5..6) runs.
@@ -1025,7 +1025,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 "--shots" = 0
 "--save-every" = 1
 "--lcu-taylor-order" = 4
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
 
 # ── Method comparison: Trotter vs Cole-Hopf vs LBM at q=5 ────────────────────
 # Same IC (sine, amplitude=0.3 for LBM stability: D1Q3 requires Ma < 1),
@@ -1066,7 +1066,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
 "--ic-amplitude" = 0.3
 "--classical-baseline" = "godunov"
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 
 # ── Method comparison v2: all-three-compatible ────────────────────────────────
 # PT + Cole-Hopf + LBM on the same IC/BC/nu.
@@ -1114,7 +1114,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 "--ic-amplitude" = 0.3
 "--classical-baseline" = "godunov"
 "--save-every" = 1
-_group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 
 # ── F11 QLBM (Quantum Lattice Boltzmann) ─────────────────────────────────────
 # D1Q3 stencil, BGK collision, periodic streaming.
