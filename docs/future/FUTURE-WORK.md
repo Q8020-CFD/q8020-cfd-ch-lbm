@@ -201,7 +201,7 @@ coefficients via `--ic-cole-hopf-coeffs "a0,a1,..."`.  When `--method`
 is `cole_hopf` or `cole_hopf_circuit`, IC defaults to
 `cole_hopf_exact` and the analytic `u(x,t)` is used as the reference
 trajectory automatically; `--no-analytic-reference` falls back to
-FTCS/Godunov.  Restricted to `--bc dirichlet` + `--source none` by the
+FTCS.  Restricted to `--bc dirichlet` + `--source none` by the
 math (Neumann-on-φ cosine basis; modes only stay decoupled in the
 unforced case).
 
@@ -260,7 +260,7 @@ Shipped.  `initial_condition_gaussian` in `burgers_classical.py`,
 `--ic gaussian` with `--ic-center` (default 0.5) and `--ic-sigma`
 (default 0.1); amplitude via the existing `--ic-amplitude`.  No
 closed-form Cole–Hopf analytic reference (the `∫u₀` is an erf, so
-`φ₀` has no clean heat-equation evolution); pairs with FTCS/Godunov
+`φ₀` has no clean heat-equation evolution); pairs with FTCS
 as the classical reference.  Works with all methods including
 `cole_hopf_circuit` and `qlbm*`; for LBM keep `--ic-amplitude < 1.0`
 for D1Q3 stability.  See OVERVIEW §1.1.

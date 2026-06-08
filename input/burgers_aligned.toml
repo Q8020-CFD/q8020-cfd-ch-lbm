@@ -1,0 +1,106 @@
+# Aligned single-case comparison: cole_hopf_circuit vs qlbm_circuit vs FTCS ref
+# =============================================================================
+# ONE aligned case per method (no sweep), STATEVECTOR (shots=0).  All three
+# (CH, QLBM, FTCS reference) land on a common, exactly-aligned time grid.
+# See "ALIGNMENT" block below.
+#
+# Run: q8020-sweep q8020-mps-burgers/input/burgers_aligned.toml
+#
+# --- ALIGNMENT (derived, verified against the code) --------------------------
+#   q=6 -> N=64,  periodic -> dx = 1/64       = 0.0156250
+#   cfl=0.1       -> dt = cfl*dx              = 0.0015625
+#   n-steps=100   -> T_end = dt*n_steps       = 0.1562500
+#
+#   QLBM native step is dt_lbm = dx (one lattice site/step), so
+#     n_steps_lbm = round(cfl * n_steps) = round(0.1*100) = 10  (EXACT, no
+#     rounding drift -- this is why n-steps MUST be a multiple of 1/cfl = 10).
+#   QLBM genuine snapshots: caller-steps {0, 10, 20, ..., 100}.
+#
+#   segment-size / save-every = 5, computed as auto-cadence would:
+#     segment-size = nearest_divisor(n_steps, 7) = nearest_divisor(100, 7) = 5
+#     (divisors of 100 = {1,2,4,5,10,20,25,50,100}; closest to the preferred 7
+#      is 5).  5 divides the QLBM cadence of 10, so CH/FTCS have a snapshot at
+#      every QLBM lattice time.  We set it explicitly instead of --auto-cadence.
+#   CH/FTCS snapshots: caller-steps {0, 5, 10, ..., 100}.
+#
+#   FTCS reference (--ref-points 200): periodic refine k=ceil(200/64)=4 ->
+#     256-pt grid (superset of the 64 quantum nodes), internally sub-stepped
+#     for stability, snapshotted at the save-every cadence.
+#
+#   => COMMON comparison grid (all three coexist) = {0, 10, 20, ..., 100}
+#      i.e. physical times {0, 0.015625, ..., 0.15625}, 11 points.
+#      Score the 3-way comparison there.  (CH/FTCS also resolve every 5 steps
+#      if you want CH-vs-FTCS at finer resolution separately.)
+#
+#   NOTE: shots=0 -> statevector.  measure_reprepare/readout/sign-recovery are
+#   no-ops in this path, so CH runs evolution-mode=single (run-on).  segment-
+#   size only bites under measure_reprepare (shots>0); save-every still drives
+#   the stored-snapshot cadence here.
+#
+# --- REFERENCE VALIDITY at this point ----------------------------------------
+#   amp=0.5 -> t_shock = 1/(2*pi*A) = 0.3183;  T_end/t_shock = 49% (pre-shock).
+#   FTCS resolution rule N_ref >= ~4A/nu = 4*0.5/0.01 = 200; actual ref grid
+#   is 256 -> comfortably resolves the (still-smooth) front.  FTCS is a valid
+#   reference here.  At nu=1e-3 or amp=0.8/low-q this stops being true --
+#   bump --ref-points (see SWAPS).
+#
+# --- SWAPS (turn this single case into the degradation studies) --------------
+#   amplitude : 0.3 (low-Mach) / 0.5 / 0.8 (high-Mach; QLBM + FTCS degrade)
+#   nu        : 5e-2 / 1e-2 / 1e-3 (QLBM degrades; at 1e-3 FTCS degrades too)
+#   q         : 5 / 6 / 7 ...  (keep n-steps a multiple of 10 for alignment;
+#               also recompute segment-size = nearest_divisor(n_steps, 7))
+#   ref-points: 200 / 400 / 1000  (raise to keep N_ref >= ~4A/nu, esp. small nu)
+#   bond-dim  : 4 / 8             (CH; 4 is converged for smooth phi)
+#   shots run : set --shots = 150000, CH --evolution-mode = measure_reprepare,
+#               and add CH --readout direct + QLBM --sign-recovery hadamard_test
+#               (the segment-size=5 above is then the live measure_reprepare
+#               segment length).
+# =============================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+
+# --- shared physics / grid (drives the alignment) ---
+"--q" = 6                       # N=64
+"--nu" = 1e-2                   # mid regime; SWAP: 5e-2 / 1e-2 / 1e-3
+"--cfl" = 0.1                   # dt = cfl*dx; 1/cfl = 10 lattice-step cadence
+"--n-steps" = 100              # multiple of 10 -> QLBM endpoint is EXACT
+"--bc" = "periodic"            # same dx for all methods
+"--ic" = "sine"                # u0 = A*sin(2*pi*x)
+"--ic-amplitude" = 0.5         # SWAP: 0.3 / 0.5 / 0.8
+"--source" = "none"
+"--shots" = 0                  # statevector; SWAP: 150000 for shots (see SWAPS)
+
+# --- reference: FTCS (not analytic) on a resolved decoupled grid ---
+"--no-analytic-reference" = true   # force FTCS reference (sine IC uses it anyway)
+"--ref-points" = 200               # -> 256-pt grid at q=6; SWAP: 400 / 1000
+
+# --- alignment cadence (explicit; = what --auto-cadence would compute) ---
+# segment-size = nearest_divisor(n_steps=100, preferred=7) = 5; divides QLBM's
+# 10-step cadence so CH/FTCS snapshot at every QLBM lattice time.
+"--segment-size" = 5
+"--save-every" = 5
+
+# Uncapped metric transpile (full depth/gate counts); isolated subprocess so a
+# segfault degrades gracefully.  Set >0 to cap.
+"--metric-transpile-timeout" = 0
+
+
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"      # exact per step, shallowest, scales in q
+"--bond-dim" = 4                     # converged for smooth phi; SWAP: 8
+"--evolution-mode" = "single"        # run-on; measure_reprepare needs shots>0
+
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+# (sign-recovery is a no-op at shots=0; add hadamard_test for the shots run)
+
+
+# Postproc: overlay CH + QLBM vs FTCS reference (anchor QLBM's coarse time grid)
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --no-ic"]

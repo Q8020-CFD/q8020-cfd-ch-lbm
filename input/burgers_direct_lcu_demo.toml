@@ -1,6 +1,6 @@
 # Direct-u nonlinear LCU demo: SV vs shots(+Hadamard) vs classical
 # SPEC-direct-u-nonlinear-lcu.md.  Two direct_lcu runs on the same grid
-# and physics, overlaid by an animated GIF against a recomputed Godunov
+# and physics, overlaid by an animated GIF against a recomputed FTCS
 # reference (entropy-satisfying, shock-capturing).
 #
 # Run: q8020-sweep q8020-mps-burgers/input/burgers_direct_lcu_demo.toml
@@ -18,7 +18,7 @@ _inject_outdir = "--outdir"
 _env = "./.venv"
 _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--noshow" = true
-"--no-classical-reference" = true   # GIF recomputes its own Godunov ref
+"--no-classical-reference" = true   # GIF recomputes its own FTCS ref
 "--method" = "direct_lcu"
 "--q" = 5
 "--nu" = 0.05
@@ -48,4 +48,4 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--sign-recovery" = "hadamard_test"
 "--auto-cadence" = true
 "--seed" = 7
-_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor direct_lcu_sv --ref godunov --no-ic"]
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor direct_lcu_sv --no-ic"]

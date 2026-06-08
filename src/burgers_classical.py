@@ -97,7 +97,7 @@ def initial_condition_gaussian(
     No closed-form Cole-Hopf analytic reference (unlike
     ``cole_hopf_exact``) -- under Cole-Hopf the integral becomes an
     erf and phi_0 has no clean heat-equation evolution.  Pairs with
-    FTCS or Godunov as the classical reference.
+    FTCS as the classical reference.
 
     Parameters
     ----------
@@ -222,32 +222,108 @@ def solve_burgers(
     return solutions
 
 
-def _godunov_flux_burgers(
-    u_L: np.ndarray, u_R: np.ndarray
-) -> np.ndarray:
-    """Vectorized exact Godunov flux for f(u) = u^2/2.
+# ── Resolved (grid-independent) FTCS reference ────────────────────────
+#
+# The quantum methods run on N = 2^q nodes, which is far too coarse to
+# serve as a converged classical "truth" at small nu.  These helpers run
+# FTCS on a refined grid of >= min_points nodes, chosen so the quantum
+# nodes are an *exact subset* of the refined grid (BC-aware), then return
+# snapshots subsampled back to the quantum nodes.  Error scoring is thus
+# pointwise on identical coordinates with no interpolation error, while
+# the reference itself is resolution-independent of q.
 
-    Solves the Riemann problem at each interface:
-      shock (u_L >= u_R): upwind by Rankine-Hugoniot speed
-      rarefaction (u_L < u_R): upwind, with f=0 at sonic point
+
+def make_reference_grid(
+    x: np.ndarray, bc: str = "periodic", min_points: int = 200,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Refined grid (>= min_points) that contains x as an exact subset.
+
+    Returns (x_ref, take) such that ``x_ref[take] == x`` exactly.  The
+    refinement factor respects the BC endpoint convention: periodic grids
+    (endpoint excluded) refine as N_ref = k*N; Dirichlet grids (both
+    endpoints) refine as N_ref = m*(N-1)+1.
     """
-    f_L = 0.5 * u_L**2
-    f_R = 0.5 * u_R**2
-    s = 0.5 * (u_L + u_R)
+    N = len(x)
+    if bc == "dirichlet":
+        m = max(1, int(np.ceil((min_points - 1) / (N - 1))))
+        n_ref = m * (N - 1) + 1
+        x_ref = np.linspace(x[0], x[-1], n_ref)
+        take = np.arange(N) * m
+    else:
+        dx = x[1] - x[0]
+        length = N * dx
+        k = max(1, int(np.ceil(min_points / N)))
+        n_ref = k * N
+        x_ref = x[0] + (length / n_ref) * np.arange(n_ref)
+        take = np.arange(N) * k
+    return x_ref, take
 
-    shock = u_L >= u_R
-    rar = ~shock
 
-    flux = np.zeros_like(u_L)
-    flux = np.where(shock & (s >= 0), f_L, flux)
-    flux = np.where(shock & (s < 0), f_R, flux)
-    flux = np.where(rar & (u_L >= 0), f_L, flux)
-    flux = np.where(rar & (u_R <= 0), f_R, flux)
-    # sonic rarefaction (u_L < 0 < u_R): f(0)=0, already 0
-    return flux
+def solve_burgers_subsampled(
+    u0_ref: np.ndarray,
+    x_ref: np.ndarray,
+    take: np.ndarray,
+    nu: float,
+    dt: float,
+    n_steps: int,
+    source_fn=None,
+    bc: str = "periodic",
+) -> list[np.ndarray]:
+    """FTCS on the refined grid, snapshotted at the caller's dt cadence.
+
+    Explicit FTCS on a fine grid is stability-limited (diffusion limit
+    ~ dx^2/2nu, advection-diffusion von Neumann limit ~ 2nu/umax^2), so
+    each caller step of size dt is integrated with n_sub internal
+    substeps small enough to stay stable.  Snapshots are taken only at
+    the caller times t = k*dt and subsampled to the quantum nodes via
+    ``take``.  Returns a length n_steps+1 list of coarse-length arrays.
+    """
+    dx = x_ref[1] - x_ref[0]
+    umax = max(float(np.max(np.abs(u0_ref))), 1e-12)
+    if nu > 0:
+        dt_diff = dx * dx / (2.0 * nu)
+        dt_adv = 2.0 * nu / (umax * umax)
+        dt_stable = 0.5 * min(dt_diff, dt_adv)
+    else:
+        dt_stable = 0.5 * dx / umax
+    n_sub = max(1, int(np.ceil(dt / dt_stable))) if dt_stable > 0 else 1
+    dt_sub = dt / n_sub
+
+    take = np.asarray(take)
+    solutions = [u0_ref[take].copy()]
+    u = u0_ref.copy()
+    for step in range(n_steps):
+        blew = False
+        for s in range(n_sub):
+            t = step * dt + s * dt_sub
+            g = (
+                source_fn(x_ref, t)
+                if source_fn is not None
+                else np.zeros_like(u)
+            )
+            with np.errstate(over="ignore", invalid="ignore"):
+                u = u + dt_sub * compute_rhs_shift(u, dx, nu, g, bc=bc)
+            if not np.all(np.isfinite(u)):
+                blew = True
+                break
+        if blew:
+            import sys
+
+            print(
+                f"[burgers] FTCS reference blowup at step "
+                f"{step + 1}/{n_steps} (t={(step + 1) * dt:.4e}); "
+                f"padding remaining steps with NaN",
+                file=sys.stderr, flush=True,
+            )
+            nan_fill = np.full(len(take), np.nan)
+            solutions.extend([nan_fill] * (n_steps - step))
+            break
+        solutions.append(u[take].copy())
+
+    return solutions
 
 
-def solve_burgers_godunov(
+def solve_burgers_reference_coarse_ic(
     u0: np.ndarray,
     x: np.ndarray,
     nu: float,
@@ -255,74 +331,26 @@ def solve_burgers_godunov(
     n_steps: int,
     source_fn=None,
     bc: str = "periodic",
+    min_points: int = 200,
 ) -> list[np.ndarray]:
-    """Godunov + explicit diffusion for 1D viscous Burgers.
+    """Resolved FTCS reference when only the coarse IC array is available.
 
-    Conservative shock-capturing scheme. Unconditionally stable for
-    the advective part (exact Riemann solver). Diffusion is explicit
-    central-difference (stable when nu*dt/dx^2 < 0.5).
-
-    Same signature and return convention as solve_burgers (FTCS).
+    Interpolates u0 from the quantum nodes onto the refined grid (used by
+    post-processors, which only have the stored coarse IC).  The solver
+    path re-evaluates the IC exactly on the refined grid instead -- see
+    burgers_solver.py -- and should be preferred when the IC function is
+    in hand.
     """
-    dx = x[1] - x[0]
-    solutions = [u0.copy()]
-    u = u0.copy()
-
-    for step in range(n_steps):
-        t = step * dt
-        g = (
-            source_fn(x, t)
-            if source_fn is not None
-            else None
-        )
-
-        # Ghost cells for flux computation
-        if bc == "periodic":
-            u_ext = np.concatenate(([u[-1]], u, [u[0]]))
-        else:
-            u_ext = np.concatenate(([0.0], u, [0.0]))
-
-        # Godunov flux at N+1 interfaces
-        F = _godunov_flux_burgers(u_ext[:-1], u_ext[1:])
-
-        # Conservative advection update
-        u_new = u - (dt / dx) * (F[1:] - F[:-1])
-
-        # Explicit central-difference diffusion
-        if bc == "periodic":
-            lap = (
-                np.roll(u, -1) + np.roll(u, 1) - 2 * u
-            ) / dx**2
-        else:
-            u_ext_d = np.concatenate(([0.0], u, [0.0]))
-            lap = (
-                u_ext_d[2:] + u_ext_d[:-2] - 2 * u
-            ) / dx**2
-        u_new += dt * nu * lap
-
-        if g is not None:
-            u_new += dt * g
-
-        if bc == "dirichlet":
-            u_new[0] = 0.0
-            u_new[-1] = 0.0
-
-        u = u_new
-        if not np.all(np.isfinite(u)):
-            import sys
-
-            print(
-                f"[burgers] Godunov blowup at step {step + 1}"
-                f"/{n_steps} (t={t + dt:.4e}); padding with NaN",
-                file=sys.stderr,
-                flush=True,
-            )
-            nan_fill = np.full_like(u, np.nan)
-            solutions.extend([nan_fill] * (n_steps - step))
-            break
-        solutions.append(u.copy())
-
-    return solutions
+    x_ref, take = make_reference_grid(x, bc=bc, min_points=min_points)
+    N = len(x)
+    if bc == "periodic":
+        length = N * (x[1] - x[0])
+        u0_ref = np.interp(x_ref, x, u0, period=length)
+    else:
+        u0_ref = np.interp(x_ref, x, u0)
+    return solve_burgers_subsampled(
+        u0_ref, x_ref, take, nu, dt, n_steps, source_fn=source_fn, bc=bc,
+    )
 
 
 def build_gradient_matrix(N: int, dx: float) -> np.ndarray:

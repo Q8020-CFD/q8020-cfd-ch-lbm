@@ -162,7 +162,9 @@ def main() -> None:
     frames_q = [np.array(sol_steps[k]) for k in step_keys]
 
     # Recompute classical FTCS + Cole-Hopf MPS for per-step overlay
-    from burgers_classical import solve_burgers, source_term_sine
+    from burgers_classical import (
+        solve_burgers_reference_coarse_ic, source_term_sine,
+    )
     from burgers_cole_hopf import run_cole_hopf_simulation
 
     dt = float(anchor_meta.get('dt', 0.0))
@@ -176,7 +178,7 @@ def main() -> None:
 
     source_fn = source_term_sine if source == 'sine' else None
     forced = source_fn is not None
-    sols_classical = solve_burgers(
+    sols_classical = solve_burgers_reference_coarse_ic(
         u0, x, nu, dt, n_steps_total,
         source_fn=source_fn, bc=bc,
     )

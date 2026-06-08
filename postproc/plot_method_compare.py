@@ -160,12 +160,6 @@ def main() -> None:
              "Takes precedence over --frames.",
     )
     p.add_argument(
-        '--ref', choices=['godunov', 'ftcs'], default='godunov',
-        help="Single reference curve: 'godunov' (entropy-satisfying "
-             "upwind + viscous diffusion, recomputed; default) or 'ftcs' "
-             "(the shift-operator classical run).",
-    )
-    p.add_argument(
         '--hide', default='',
         help="Comma-separated method names to omit from the plot "
              "(e.g. 'lbm,shift').",
@@ -286,12 +280,7 @@ def main() -> None:
         sys.exit(1)
 
     # Capture the FTCS run before hiding, in case it is the reference.
-    ftcs_snaps = next(
-        (s for k, s in method_snaps.items() if key_method[k] == 'shift'),
-        None,
-    )
-
-    # Drop series the user asked to hide (kept above for reference use).
+    # Drop series the user asked to hide.
     # A token matches by series key, method name, or case_id.
     if hidden:
         method_snaps = {
@@ -304,13 +293,6 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-
-    if args.ref == 'ftcs' and ftcs_snaps is None:
-        print(
-            "--ref ftcs requested but no 'shift' method in the sweep.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     dt = float(anchor_meta.get('dt', 0.0))
     nu = float(anchor_meta.get('nu', 1e-2))
@@ -365,21 +347,17 @@ def main() -> None:
     }
     u0 = frames[next(iter(frames))][0].copy()
 
-    # Single reference curve.
+    # Single reference curve: FTCS (shift-operator forward Euler),
+    # recomputed from the IC so the reference does not depend on a
+    # stored classical run being present in the sweep.
     bc = anchor_meta.get('bc', 'periodic')
-    if args.ref == 'ftcs':
-        ref_label = 'FTCS (reference)'
-        frames_ref = [_nearest(ftcs_snaps, int(k)) for k in step_keys_common]
-    else:
-        # Godunov: entropy-satisfying upwind flux + viscous diffusion,
-        # recomputed from the IC (not stored per-step).
-        from burgers_classical import solve_burgers_godunov
-        ref_label = 'Godunov (reference)'
-        print('  Computing Godunov reference ...', file=sys.stderr)
-        sols_godunov = solve_burgers_godunov(
-            u0, x, nu, dt, n_steps_total, bc=bc,
-        )
-        frames_ref = [sols_godunov[int(k)] for k in step_keys_common]
+    from burgers_classical import solve_burgers_reference_coarse_ic
+    ref_label = 'FTCS (reference)'
+    print('  Computing resolved FTCS reference ...', file=sys.stderr)
+    sols_ftcs = solve_burgers_reference_coarse_ic(
+        u0, x, nu, dt, n_steps_total, bc=bc,
+    )
+    frames_ref = [sols_ftcs[int(k)] for k in step_keys_common]
 
     # Per-method divergence masking.  A single diverged method must not
     # collapse the whole animation: instead of globally truncating at the

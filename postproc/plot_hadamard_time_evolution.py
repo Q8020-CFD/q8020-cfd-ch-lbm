@@ -138,7 +138,7 @@ def main() -> None:
 
     # For classical reference per step: recompute with the same BC to match
     # the quantum path exactly.  Using the IC from step 0.
-    from burgers_classical import solve_burgers
+    from burgers_classical import solve_burgers_reference_coarse_ic
     dt = float(anchor_meta.get('dt', 0.0))
     nu = float(anchor_meta.get('nu', 1e-4))
     bc = anchor_meta.get('bc', 'periodic')
@@ -149,7 +149,7 @@ def main() -> None:
     def _src(xx, tt):
         return np.sin(2.0 * np.pi * xx) * np.cos(2.0 * np.pi * tt)
 
-    sols_classical = solve_burgers(
+    sols_classical = solve_burgers_reference_coarse_ic(
         u0, x, nu, dt, n_steps_total, source_fn=_src, bc=bc,
     )
     # Map step index -> classical snapshot

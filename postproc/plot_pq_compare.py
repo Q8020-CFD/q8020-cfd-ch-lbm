@@ -148,8 +148,8 @@ def main() -> None:
     shots = int(ref_params.get('shots', 0))
     q = int(ref_params.get('q', 0)) or int(np.log2(len(x)))
 
-    # Compute classical references
-    from burgers_classical import solve_burgers, solve_burgers_godunov
+    # Compute resolved classical FTCS reference.
+    from burgers_classical import solve_burgers_reference_coarse_ic
     u0 = None
     for label, (xg, frames, _) in datasets.items():
         if 0 in frames:
@@ -160,21 +160,16 @@ def main() -> None:
         print("No step-0 IC found.", file=sys.stderr)
         sys.exit(1)
 
-    sols_godunov_list = solve_burgers_godunov(
+    sols_ftcs_list = solve_burgers_reference_coarse_ic(
         u0, x, nu, dt, n_steps, source_fn=None, bc=bc,
     )
-    sols_classical = {i: sols_godunov_list[i]
-                      for i in range(len(sols_godunov_list))}
-    sols_ftcs_list = solve_burgers(
-        u0, x, nu, dt, n_steps, source_fn=None, bc=bc,
-    )
-    sols_ftcs = {i: sols_ftcs_list[i]
-                 for i in range(len(sols_ftcs_list))}
-    # Track FTCS divergence step
-    ftcs_diverged: int | None = None
+    sols_classical = {i: sols_ftcs_list[i]
+                      for i in range(len(sols_ftcs_list))}
+    # Track FTCS (reference) divergence step
+    ref_diverged: int | None = None
     for i in range(len(sols_ftcs_list)):
         if not np.all(np.isfinite(sols_ftcs_list[i])):
-            ftcs_diverged = i
+            ref_diverged = i
             break
 
     # Unify step keys across all datasets
@@ -256,13 +251,9 @@ def main() -> None:
     # IC
     ax_u.plot(x, u0, 'k--', alpha=0.2, lw=1, label='IC')
 
-    # Classical Godunov (reference)
+    # Classical FTCS (reference; disappears at blowup)
     cl_line, = ax_u.plot([], [], 'b-', lw=1.5, alpha=0.6,
-                         label='Classical Godunov')
-
-    # Classical FTCS (overlay, disappears at blowup)
-    ftcs_line, = ax_u.plot([], [], '-', color='#2ca02c', lw=1.0,
-                           alpha=0.5, label='Classical FTCS')
+                         label='Classical FTCS')
 
     # Quantum method lines
     q_lines = {}
@@ -292,7 +283,7 @@ def main() -> None:
     for label in datasets:
         c = colors.get(label, '#333333')
         line, = ax_err.plot([], [], '-', color=c, lw=1.5,
-                            label=f'{label} vs Godunov')
+                            label=f'{label} vs FTCS')
         err_lines[label] = line
 
     ax_err.set_xlim(times[0], times[-1])
@@ -306,7 +297,7 @@ def main() -> None:
         min(all_errs.max() * 2, 10.0),
     )
     ax_err.set_xlabel("Time")
-    ax_err.set_ylabel("Rel. L2 error vs Godunov")
+    ax_err.set_ylabel("Rel. L2 error vs FTCS")
     ax_err.legend(loc='upper left', fontsize=8)
     ax_err.grid(alpha=0.2)
 
@@ -317,15 +308,11 @@ def main() -> None:
         t = s * dt
         pct = 100.0 * t / t_shock
 
-        # Classical Godunov
-        cl = sols_classical.get(s, np.zeros_like(u0))
-        cl_line.set_data(x, cl)
-
-        # Classical FTCS (hide after divergence)
-        if ftcs_diverged is not None and s >= ftcs_diverged:
-            ftcs_line.set_data([], [])
+        # Classical FTCS reference (hide after divergence)
+        if ref_diverged is not None and s >= ref_diverged:
+            cl_line.set_data([], [])
         else:
-            ftcs_line.set_data(x, sols_ftcs.get(s, np.zeros_like(u0)))
+            cl_line.set_data(x, sols_classical.get(s, np.zeros_like(u0)))
 
         # Quantum methods (stop updating after divergence)
         parts = []
@@ -350,7 +337,7 @@ def main() -> None:
             f"step {s}/{n_steps}  t={t:.4f} ({pct:.0f}% T_shock)\n"
             + "  ".join(parts)
         )
-        return tuple([cl_line, ftcs_line, time_text]
+        return tuple([cl_line, time_text]
                      + list(q_lines.values())
                      + list(err_lines.values()))
 

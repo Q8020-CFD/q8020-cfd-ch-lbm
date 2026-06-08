@@ -7,7 +7,7 @@ _inject_outdir = "--outdir"
 _env = "./.venv"
 _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--noshow" = true
-"--no-classical-reference" = true   # GIF recomputes its own Godunov reference
+"--no-classical-reference" = true   # GIF recomputes its own FTCS reference
 "--q" = 4                     # qubits = 4, 5, 6
 "--nu" = 1e-2                 # viscosity: 1e-2, 5e-3 (smaller nu need more q)
 "--cfl" = 0.1                 # time step control, smaller --> more steps
@@ -35,5 +35,5 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--propagator" = "dense-block"       
 "--evolution-mode" = "measure_reprepare"
 
-# Postproc: 2-panel animated GIF (u(x,t) + L2 error vs Godunov)
-_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --ref godunov --no-ic"]
+# Postproc: 2-panel animated GIF (u(x,t) + L2 error vs FTCS)
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --no-ic"]

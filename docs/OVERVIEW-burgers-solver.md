@@ -73,7 +73,7 @@ on `q` qubits, where `k` indexes grid cells in binary.
 Initial conditions: `sine` (single mode `u₀(x) = sin(2πx)`), `multimode`
 (random sum of low-wavenumber modes), `gaussian` (localized pulse
 `u₀(x) = A·exp(−((x − x₀)/σ)²)`, useful for shock-formation demos; no
-analytic reference, pairs with FTCS/Godunov), or `cole_hopf_exact` (a
+analytic reference, pairs with FTCS), or `cole_hopf_exact` (a
 Neumann cosine sum on `φ` that admits a closed-form analytic `u(x, t)`
 under unforced Cole–Hopf heat evolution — see §4.4). Sources: `sine`
 (Gopalakrishnan Meena AIAA-2026 reference test problem,
@@ -87,12 +87,22 @@ the L² error against it. The reference is chosen automatically:
   `cole_hopf_circuit`): the closed-form analytic `u(x, t)` evaluated at
   each saved step — exact, microsecond cost.
 - Otherwise: a classical Forward-Time Central-Space (FTCS) Burgers
-  solve, or Godunov via `--classical-baseline godunov`.
+  solve. The FTCS reference is **resolution-decoupled from the quantum
+  grid**: it runs on a refined grid of at least `--ref-points` nodes
+  (default 200) chosen so the `N = 2^q` quantum nodes are an exact
+  subset (BC-aware), with internal substepping for explicit stability,
+  then subsampled back to the quantum nodes for pointwise scoring (no
+  interpolation error). The IC is re-evaluated at the refined
+  resolution. This makes the reference a converged "truth" rather than
+  a same-grid coarse run — so even the classical `shift` method now
+  shows a nonzero error against it.
 
 Flags:
 
+- `--ref-points`: minimum FTCS reference grid size (default 200). No
+  effect on the analytic reference (exact at any resolution).
 - `--no-analytic-reference`: under `--ic cole_hopf_exact`, fall back to
-  the FTCS/Godunov reference (e.g. for cross-validating the analytic
+  the FTCS reference (e.g. for cross-validating the analytic
   formula against the classical solver).
 - `--no-classical-reference`: skip the reference trajectory entirely
   (no error metrics, no `speedup_ratio` in the analysis fragment).
@@ -831,7 +841,7 @@ monotonically. Method accuracy claims against this reference are
 disappears for this test family.
 
 **Suppressing the analytic reference.** `--no-analytic-reference`
-falls back to FTCS/Godunov even with `--ic cole_hopf_exact`, useful
+falls back to FTCS even with `--ic cole_hopf_exact`, useful
 for cross-checking the analytic formula itself against the classical
 solver during V&V. `--no-classical-reference` skips the reference
 trajectory entirely (no error metrics, no `speedup_ratio`).
@@ -1083,11 +1093,13 @@ ignores the flag.
 By default the solver runs a reference trajectory alongside the
 chosen method and reports L² error against it.  The reference is
 chosen automatically: closed-form analytic when `--ic cole_hopf_exact`
-(microsecond cost), otherwise FTCS via `solve_burgers` (or Godunov via
-`--classical-baseline godunov`).  Two flags suppress:
+(microsecond cost), otherwise a resolution-decoupled FTCS run via
+`solve_burgers_subsampled` on a refined grid of `--ref-points` nodes
+(default 200, exact subset of the `2^q` quantum grid; subsampled back
+for scoring).  Two flags suppress:
 
 - `--no-analytic-reference` — under `--ic cole_hopf_exact`, fall
-  back to FTCS/Godunov instead of the closed-form.  Useful for
+  back to FTCS instead of the closed-form.  Useful for
   cross-validating the analytic formula itself against the classical
   solver during V&V.  No effect for other ICs.
 - `--no-classical-reference` — skip the reference trajectory
@@ -1225,12 +1237,14 @@ q8020-mps-burgers/
 │   └── plot_pq_compare.py
 └── src/
     ├── burgers_solver.py            # CLI entry point; reference-trajectory
-    │                                # dispatcher (analytic / FTCS / Godunov /
+    │                                # dispatcher (analytic / FTCS /
     │                                # skipped) per --ic and the two
     │                                # --no-*-reference flags
     ├── burgers_fw.py                # solverfw bindings (§8)
     ├── burgers_classical.py         # ICs (sine, multimode, gaussian) +
     │                                # FTCS solve_burgers + source_term_sine
+    │                                # + resolved reference (make_reference_grid,
+    │                                # solve_burgers_subsampled)
     ├── burgers_nonlinear.py         # compute_rhs_shift used by ShiftFD;
     │                                # Pauli decomp (Eqs. 5–7) + Trotter
     │                                # circuit synthesis (Eq. 8)

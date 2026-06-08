@@ -982,7 +982,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_cole_hopf_circuit_e
 
 # ── Pure quantum pathway comparison (q=5, Dirichlet, unforced) ──────────────
 # Matched pair: same IC, BC, nu, grid, time horizon.  Differs only in algorithm.
-# Run both, then the postproc overlays them + classical Godunov/FTCS reference.
+# Run both, then the postproc overlays them + classical FTCS reference.
 # nu=1e-2 keeps Cole-Hopf forward transform well-conditioned (Re=100).
 # save-every=1 for full movie.  shock-pct=100 → T_end = t_shock.
 
@@ -1016,7 +1016,7 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
 # ── Method comparison: Trotter vs Cole-Hopf vs LBM at q=5 ────────────────────
 # Same IC (sine, amplitude=0.3 for LBM stability: D1Q3 requires Ma < 1),
 # periodic BC, nu=1e-2, source=none, shock_pct=100.
-# Godunov baseline (shock-capturing, conservative) as classical reference.
+# FTCS baseline as classical reference.
 
 [method_compare_q5_trotter]
 "--q" = 5
@@ -1028,7 +1028,6 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
 "--bc" = "periodic"
 "--source" = "none"
 "--ic-amplitude" = 0.3
-"--classical-baseline" = "godunov"
 "--save-every" = 1
 
 [method_compare_q5_cole_hopf]
@@ -1039,7 +1038,6 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
 "--bc" = "periodic"
 "--source" = "none"
 "--ic-amplitude" = 0.3
-"--classical-baseline" = "godunov"
 "--save-every" = 1
 
 [method_compare_q5_lbm]
@@ -1050,7 +1048,6 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_pq_compare.py"]
 "--bc" = "periodic"
 "--source" = "none"
 "--ic-amplitude" = 0.3
-"--classical-baseline" = "godunov"
 "--save-every" = 1
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 
@@ -1071,7 +1068,6 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 "--ic" = "sine"
 "--source" = "none"
 "--ic-amplitude" = 0.3
-"--classical-baseline" = "godunov"
 "--save-every" = 1
 "--shots" = 0
 
@@ -1085,7 +1081,6 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 "--ic" = "sine"
 "--source" = "none"
 "--ic-amplitude" = 0.3
-"--classical-baseline" = "godunov"
 "--save-every" = 1
 
 [method_compare_v2_lbm]
@@ -1098,7 +1093,6 @@ _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 "--ic" = "sine"
 "--source" = "none"
 "--ic-amplitude" = 0.3
-"--classical-baseline" = "godunov"
 "--save-every" = 1
 _group_postproc = ["python ./q8020-mps-burgers/postproc/plot_method_compare.py"]
 
