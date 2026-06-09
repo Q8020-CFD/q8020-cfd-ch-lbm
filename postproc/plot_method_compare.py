@@ -165,9 +165,9 @@ def main() -> None:
     )
     p.add_argument(
         '--ref', choices=['godunov', 'ftcs'], default='godunov',
-        help="Single reference curve: 'godunov' (entropy-satisfying "
-             "upwind + viscous diffusion, recomputed; default) or 'ftcs' "
-             "(the shift-operator classical run).",
+        help="DEPRECATED / ignored -- superseded by --reference (the "
+             "reference is now a stored case, e.g. ftcs_reference).  Kept "
+             "only so existing TOMLs that pass --ref still parse.",
     )
     p.add_argument(
         '--hide', default='',
@@ -297,11 +297,6 @@ def main() -> None:
         sys.exit(1)
 
     # Capture the FTCS run before hiding, in case it is the reference.
-    ftcs_snaps = next(
-        (s for k, s in method_snaps.items() if key_method[k] == 'shift'),
-        None,
-    )
-
     # Drop series the user asked to hide (kept above for reference use).
     # A token matches by series key, method name, or case_id.
     if hidden:
@@ -316,11 +311,6 @@ def main() -> None:
             )
             sys.exit(1)
 
-<<<<<<< Updated upstream
-    if args.ref == 'ftcs' and ftcs_snaps is None:
-        print(
-            "--ref ftcs requested but no 'shift' method in the sweep.",
-=======
     # Pull out the reference series.  The classical reference is a stored
     # case (run once as its own TOML group) -- it is the error baseline and
     # the reference curve, NOT a method line, so remove it from method_snaps
@@ -351,7 +341,6 @@ def main() -> None:
         print(
             f"Only the reference series '{ref_key}' present; "
             "nothing to compare against it.",
->>>>>>> Stashed changes
             file=sys.stderr,
         )
         sys.exit(1)
@@ -409,23 +398,6 @@ def main() -> None:
     }
     u0 = frames[next(iter(frames))][0].copy()
 
-<<<<<<< Updated upstream
-    # Single reference curve.
-    bc = anchor_meta.get('bc', 'periodic')
-    if args.ref == 'ftcs':
-        ref_label = 'FTCS (reference)'
-        frames_ref = [_nearest(ftcs_snaps, int(k)) for k in step_keys_common]
-    else:
-        # Godunov: entropy-satisfying upwind flux + viscous diffusion,
-        # recomputed from the IC (not stored per-step).
-        from burgers_classical import solve_burgers_godunov
-        ref_label = 'Godunov (reference)'
-        print('  Computing Godunov reference ...', file=sys.stderr)
-        sols_godunov = solve_burgers_godunov(
-            u0, x, nu, dt, n_steps_total, bc=bc,
-        )
-        frames_ref = [sols_godunov[int(k)] for k in step_keys_common]
-=======
     # Reference curve: the stored ftcs_reference case, resampled onto the
     # common timeline from its nearest snapshot (same q-grid, so no spatial
     # interpolation).  No recomputation -- the reference is rendered, not
@@ -437,7 +409,6 @@ def main() -> None:
         file=sys.stderr,
     )
     frames_ref = [_nearest(ref_snaps, s) for s in step_keys_common]
->>>>>>> Stashed changes
 
     # Per-method divergence masking.  A single diverged method must not
     # collapse the whole animation: instead of globally truncating at the

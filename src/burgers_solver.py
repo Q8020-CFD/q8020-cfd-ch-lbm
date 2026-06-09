@@ -79,6 +79,65 @@ def _nearest_divisor(n: int, target: int) -> int:
     return min(divisors, key=lambda d: (abs(d - target), -d))
 
 
+def make_reference_grid(x, bc="periodic", min_points=0):
+    """Refined classical-reference grid containing the q-grid `x` as an
+    exact subset.  Returns (x_ref, take) with len(x_ref) >= min_points and
+    x_ref[take] == x.  Refinement factor k = ceil(min_points / N)."""
+    n = len(x)
+    k = max(1, int(np.ceil(min_points / n))) if min_points else 1
+    if bc == "dirichlet":
+        x_ref = np.linspace(0.0, 1.0, (n - 1) * k + 1, endpoint=True)
+    else:
+        x_ref = np.linspace(0.0, 1.0, n * k, endpoint=False)
+    take = np.arange(n) * k
+    return x_ref, take
+
+
+def construct_ic(x_grid, args, nu, ch_coeffs):
+    """Initial velocity on `x_grid` from the CLI IC args (mirrors the main
+    IC block, for the resolved ftcs_reference grid).  `ch_coeffs` is the
+    already-parsed/validated Cole-Hopf cosine coefficients (or None)."""
+    if args.ic == "sine":
+        u0 = initial_condition_sine(x_grid)
+    elif args.ic == "multimode":
+        u0 = initial_condition_multimode(
+            x_grid, n_modes=args.ic_modes, seed=args.ic_seed,
+            alpha=args.ic_alpha,
+        )
+    elif args.ic == "gaussian":
+        u0 = initial_condition_gaussian(
+            x_grid, amplitude=1.0, center=args.ic_center, sigma=args.ic_sigma,
+        )
+    elif args.ic == "cole_hopf_exact":
+        u0 = initial_condition_cole_hopf_exact(x_grid, ch_coeffs, nu, L_box=1.0)
+    else:
+        raise ValueError(f"Unknown IC: {args.ic}")
+    if args.ic_amplitude != 1.0:
+        u0 = u0 * args.ic_amplitude
+    return u0
+
+
+def solve_burgers_subsampled(u0_ref, x_ref, take, nu, dt, n_steps,
+                             source_fn=None, bc="periodic"):
+    """FTCS on the refined grid, sub-stepped for stability, then subsampled
+    back to the q-grid.  Returns n_steps+1 snapshots on x_ref[take].
+
+    The refined grid has a smaller dx, so the caller's macro `dt` is split
+    into `sub` micro steps to satisfy the FTCS diffusion floor
+    dt <= dx^2/(2 nu) (0.25 safety also covers advection)."""
+    dx_ref = x_ref[1] - x_ref[0]
+    if nu > 0.0:
+        dt_stable = 0.25 * dx_ref * dx_ref / nu
+        sub = max(1, int(np.ceil(dt / dt_stable)))
+    else:
+        sub = 1
+    sols_fine = solve_burgers(
+        u0_ref, x_ref, nu, dt / sub, n_steps * sub,
+        source_fn=source_fn, bc=bc,
+    )
+    return [sols_fine[m * sub][take].copy() for m in range(n_steps + 1)]
+
+
 # *****************************************************************************
 # main
 
@@ -188,6 +247,15 @@ if __name__ == "__main__":
             "(replacing FTCS/Godunov, which is itself approximate).  Pass "
             "this flag to fall back to the FTCS/Godunov reference even "
             "with the analytic IC.  No effect for other --ic choices."
+        ),
+    )
+    parser.add_argument(
+        "--ref-points", type=int, default=0,
+        help=(
+            "Minimum grid points for the ftcs_reference method's resolved "
+            "FTCS solve; the q-grid is refined by k=ceil(ref_points/N) so "
+            "the q nodes stay an exact subset, then subsampled back.  0 = "
+            "no refinement (solve on the q-grid).  Ignored by other methods."
         ),
     )
     parser.add_argument(
