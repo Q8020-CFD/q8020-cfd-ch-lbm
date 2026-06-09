@@ -390,9 +390,9 @@ def main() -> None:
              "Takes precedence over --frames.",
     )
     p.add_argument(
-        '--ref', choices=['godunov', 'ftcs'], default='godunov',
+        '--ref', default='ftcs',
         help="DEPRECATED / ignored -- superseded by --reference (the "
-             "reference is now a stored case, e.g. ftcs_reference).  Kept "
+             "reference is now a stored FTCS case, ftcs_reference).  Kept "
              "only so existing TOMLs that pass --ref still parse.",
     )
     p.add_argument(
