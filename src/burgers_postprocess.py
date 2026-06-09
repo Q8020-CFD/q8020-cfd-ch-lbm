@@ -404,6 +404,8 @@ class BurgersPostProcessor(PostProcessor):
             "bc": config.bc,
             "trotter_order": config.trotter_order,
             "trotter_reps": config.trotter_reps,
+            "qalb_collision_trotter_reps": getattr(
+                config, "qalb_collision_trotter_reps", 0),
             "shots": config.shots,
             "t1": getattr(config, "t1", None),
             "t2": getattr(config, "t2", None),

@@ -1,0 +1,70 @@
+
+# =====================================================================
+# A-B run 4 of 4 :  THE JOINT HARD POINT  (the crossover, shown directly)
+# ---------------------------------------------------------------------
+# Single operating point chosen to sit inside the crossover band: CH is
+# already degrading and QLBM is effectively the only viable method, so
+# the A-B is demonstrated rather than inferred from the sweeps.
+#
+#   nu=0.008, A=0.5, q=8:
+#     CH peakedness phi ~ exp(A/2*pi*nu) = exp(0.5/0.0503) ~ 2.2e4  ->
+#        far past the shots-resolvable floor; CH L2 expected poor.
+#     QLBM tau = 0.5 + 0.008*256 = 2.55 > 1, comfortably stable; L2 at
+#        its ~0.11 scheme-gap floor.
+#
+# Read against run 1 (nu sweep) and run 2 (amplitude sweep): this is the
+# point where their two cliffs overlap.  Classical lbm included so the
+# QLBM number splits cleanly into scheme gap (lbm vs FTCS) + quantum
+# error (QLBM vs lbm).
+#
+# q=8 -> #27.1 required for QLBM; set --q = 6 for a today-dry-run.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+
+"--ic-amplitude" = 0.5
+"--nu" = 0.008                        # CH broken, QLBM stable (tau=2.55)
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 6                             # TODO = 8  (today-runnable dry-run at q=6)
+"--n-steps" = 50                      # TODO = 200  (n_steps ~ N, so q=8 -> 200)
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 4
+"--segment-size" = 5
+"--save-every" = 5
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3
+"--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
+
+[lbm_classical]
+"--method" = "lbm"
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 400
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

@@ -25,7 +25,11 @@ list and classification):
 - cole_hopf / cole_hopf_circuit: Cole-Hopf linearisation, MPS / pure quantum
 - lbm: classical D1Q3 lattice Boltzmann (no quantum content -- no
   shots, no backend)
-- qlbm_circuit: quantum-circuit D1Q3 (hybrid Option A; shots honoured)
+- qlbm_circuit_hybrid: quantum-circuit D1Q3 (retired hybrid Option A;
+  classical collision shadow + Householder dilation; shots honoured).
+  Kept as the cross-validation oracle. `qlbm_circuit` is a back-compat
+  alias to it until the pure-quantum QALB lands (see
+  docs/future/SPEC-qlbm-pure-quantum-qalb.md).
 
 Integrates with q8020 sweeper via argparse CLI and metadata fragment writers.
 """
@@ -50,8 +54,7 @@ from burgers_classical import (
     initial_condition_sine,
     initial_condition_multimode,
     source_term_sine,
-    make_reference_grid,
-    solve_burgers_subsampled,
+    solve_burgers,
 )
 from burgers_cole_hopf import (
     analytic_solution_cole_hopf,
@@ -75,31 +78,63 @@ def _nearest_divisor(n: int, target: int) -> int:
     return min(divisors, key=lambda d: (abs(d - target), -d))
 
 
-def construct_ic(x, args, nu, ch_coeffs=None):
-    """Build the initial velocity field on grid ``x`` from CLI args.
+def make_reference_grid(x, bc="periodic", min_points=0):
+    """Refined classical-reference grid containing the q-grid `x` as an
+    exact subset.  Returns (x_ref, take) with len(x_ref) >= min_points and
+    x_ref[take] == x.  Refinement factor k = ceil(min_points / N)."""
+    n = len(x)
+    k = max(1, int(np.ceil(min_points / n))) if min_points else 1
+    if bc == "dirichlet":
+        x_ref = np.linspace(0.0, 1.0, (n - 1) * k + 1, endpoint=True)
+    else:
+        x_ref = np.linspace(0.0, 1.0, n * k, endpoint=False)
+    take = np.arange(n) * k
+    return x_ref, take
 
-    Pure array construction (no validation/warnings -- those run once in
-    main).  Factored out so the resolved FTCS reference can re-evaluate
-    the same IC on its refined grid instead of interpolating a coarse u0.
-    ``ch_coeffs`` is required only for --ic cole_hopf_exact.
-    """
+
+def construct_ic(x_grid, args, nu, ch_coeffs):
+    """Initial velocity on `x_grid` from the CLI IC args (mirrors the main
+    IC block, for the resolved ftcs_reference grid).  `ch_coeffs` is the
+    already-parsed/validated Cole-Hopf cosine coefficients (or None)."""
     if args.ic == "sine":
-        u0 = initial_condition_sine(x)
+        u0 = initial_condition_sine(x_grid)
     elif args.ic == "multimode":
         u0 = initial_condition_multimode(
-            x, n_modes=args.ic_modes, seed=args.ic_seed, alpha=args.ic_alpha,
+            x_grid, n_modes=args.ic_modes, seed=args.ic_seed,
+            alpha=args.ic_alpha,
         )
     elif args.ic == "gaussian":
         u0 = initial_condition_gaussian(
-            x, amplitude=1.0, center=args.ic_center, sigma=args.ic_sigma,
+            x_grid, amplitude=1.0, center=args.ic_center, sigma=args.ic_sigma,
         )
     elif args.ic == "cole_hopf_exact":
-        u0 = initial_condition_cole_hopf_exact(x, ch_coeffs, nu, L_box=1.0)
+        u0 = initial_condition_cole_hopf_exact(x_grid, ch_coeffs, nu, L_box=1.0)
     else:
         raise ValueError(f"Unknown IC: {args.ic}")
     if args.ic_amplitude != 1.0:
         u0 = u0 * args.ic_amplitude
     return u0
+
+
+def solve_burgers_subsampled(u0_ref, x_ref, take, nu, dt, n_steps,
+                             source_fn=None, bc="periodic"):
+    """FTCS on the refined grid, sub-stepped for stability, then subsampled
+    back to the q-grid.  Returns n_steps+1 snapshots on x_ref[take].
+
+    The refined grid has a smaller dx, so the caller's macro `dt` is split
+    into `sub` micro steps to satisfy the FTCS diffusion floor
+    dt <= dx^2/(2 nu) (0.25 safety also covers advection)."""
+    dx_ref = x_ref[1] - x_ref[0]
+    if nu > 0.0:
+        dt_stable = 0.25 * dx_ref * dx_ref / nu
+        sub = max(1, int(np.ceil(dt / dt_stable)))
+    else:
+        sub = 1
+    sols_fine = solve_burgers(
+        u0_ref, x_ref, nu, dt / sub, n_steps * sub,
+        source_fn=source_fn, bc=bc,
+    )
+    return [sols_fine[m * sub][take].copy() for m in range(n_steps + 1)]
 
 
 # *****************************************************************************
@@ -148,7 +183,7 @@ if __name__ == "__main__":
             "random-phase Fourier IC (NOT Burgers turbulence; see F11 "
             "in implementation plan).  gaussian = localized pulse "
             "u0=A*exp(-((x-x0)/sigma)^2) (no analytic CH reference; "
-            "uses FTCS).  cole_hopf_exact = u0 derived from a "
+            "uses FTCS/Godunov).  cole_hopf_exact = u0 derived from a "
             "Neumann cosine sum phi_0(x)=a_0+sum a_n*cos(n*pi*x), "
             "yielding a closed-form analytic u(x,t) reference under "
             "unforced Cole-Hopf heat evolution (Dirichlet-on-u BC only). "
@@ -189,10 +224,15 @@ if __name__ == "__main__":
         help="Scale factor for IC amplitude (LBM requires < 1.0)",
     )
     parser.add_argument(
+        "--classical-baseline", type=str, default="ftcs",
+        choices=["ftcs"],
+        help="Classical reference solver for error computation",
+    )
+    parser.add_argument(
         "--no-classical-reference", dest="classical_reference",
         action="store_false", default=True,
         help=(
-            "Skip the classical reference run entirely (no FTCS "
+            "Skip the classical reference run entirely (no FTCS/Godunov "
             "solve, no error-vs-classical metrics, no speedup ratio).  "
             "Default: classical reference is run."
         ),
@@ -203,21 +243,18 @@ if __name__ == "__main__":
         help=(
             "When --ic cole_hopf_exact, by default the closed-form "
             "analytic solution u(x,t) is used as the classical reference "
-            "(replacing FTCS, which is itself approximate).  Pass "
-            "this flag to fall back to the FTCS reference even "
+            "(replacing FTCS/Godunov, which is itself approximate).  Pass "
+            "this flag to fall back to the FTCS/Godunov reference even "
             "with the analytic IC.  No effect for other --ic choices."
         ),
     )
     parser.add_argument(
-        "--ref-points", type=int, default=200,
+        "--ref-points", type=int, default=0,
         help=(
-            "Minimum grid points for the classical FTCS reference, "
-            "decoupled from the quantum grid (N=2^q).  The reference runs "
-            "on the smallest BC-consistent superset of the quantum nodes "
-            "with at least this many points, then is subsampled back to "
-            "the quantum nodes for pointwise error scoring (no "
-            "interpolation error).  Default: 200.  No effect on the "
-            "analytic Cole-Hopf reference (exact at any resolution)."
+            "Minimum grid points for the ftcs_reference method's resolved "
+            "FTCS solve; the q-grid is refined by k=ceil(ref_points/N) so "
+            "the q nodes stay an exact subset, then subsampled back.  0 = "
+            "no refinement (solve on the q-grid).  Ignored by other methods."
         ),
     )
     parser.add_argument(
@@ -236,16 +273,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--method", type=str, default="shift",
         choices=[
-            "shift", "quantum_exact", "quantum_circuit", "mps",
-            "tebd", "tebd_circuit", "cole_hopf",
-            "cole_hopf_circuit", "lbm", "qlbm_circuit", "direct_lcu",
+            "shift", "ftcs_reference", "quantum_exact", "quantum_circuit",
+            "mps", "tebd", "tebd_circuit", "cole_hopf",
+            "cole_hopf_circuit", "lbm", "qlbm_circuit",
+            "qlbm_circuit_hybrid", "qlbm_circuit_linear", "direct_lcu",
         ],
         help=(
-            "Evolution method.  Classical: shift (FTCS), tebd, "
-            "cole_hopf, lbm (D1Q3 -- ignores --shots).  Hybrid: "
-            "quantum_exact, quantum_circuit, mps, qlbm_circuit.  "
-            "Pure-quantum: cole_hopf_circuit.  See OVERVIEW §2 for "
-            "the full classification."
+            "Evolution method.  Classical: shift (FTCS on the q-grid), "
+            "ftcs_reference (resolved FTCS on a >= --ref-points grid, "
+            "subsampled back to the q-grid -- the shared classical "
+            "reference, run as its own case), tebd, cole_hopf, lbm "
+            "(D1Q3 -- ignores --shots).  Hybrid: quantum_exact, "
+            "quantum_circuit, mps, qlbm_circuit_hybrid (alias "
+            "qlbm_circuit, pending the pure-quantum QALB).  "
+            "Pure-quantum: cole_hopf_circuit.  See OVERVIEW §2 for the full "
+            "classification."
         ),
     )
     parser.add_argument(
@@ -317,6 +359,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lcu-taylor-order", type=int, default=4,
         help="Taylor truncation order for LCU propagator",
+    )
+    parser.add_argument(
+        "--qalb-collision-trotter-reps", type=int, default=0,
+        help=(
+            "qlbm_circuit (QALB) shots collision synthesis (#27.1): 0 = "
+            "dense UnitaryGate of e^{-iT H'} (exact); >0 = Suzuki-Trotter "
+            "of the Pauli H' at this rep count (hardware-honest depth, "
+            "uses --trotter-order).  Order-2 error ~ 1/reps²; reps~4 sits "
+            "below the qc=2 Fock-truncation floor."
+        ),
+    )
+    parser.add_argument(
+        "--fock-qubits", type=int, default=3,
+        help=(
+            "Bosonic Fock qubits per density register for qlbm_circuit "
+            "(QALB) collision.  qc=2 is too coarse for a full run; qc=3 "
+            "converges (Itani App B truncation)."
+        ),
     )
     parser.add_argument(
         "--readout", type=str, default="direct",
@@ -392,7 +452,19 @@ if __name__ == "__main__":
                 )
 
     ch_coeffs: np.ndarray | None = None
-    if args.ic == "cole_hopf_exact":
+    if args.ic == "sine":
+        u0 = initial_condition_sine(x)
+    elif args.ic == "multimode":
+        u0 = initial_condition_multimode(
+            x, n_modes=args.ic_modes, seed=args.ic_seed, alpha=args.ic_alpha,
+        )
+    elif args.ic == "gaussian":
+        # Build at unit amplitude; the existing --ic-amplitude post-
+        # multiplier below scales it (matches sine / multimode flow).
+        u0 = initial_condition_gaussian(
+            x, amplitude=1.0, center=args.ic_center, sigma=args.ic_sigma,
+        )
+    elif args.ic == "cole_hopf_exact":
         if args.bc != "dirichlet":
             raise ValueError(
                 "--ic cole_hopf_exact requires --bc dirichlet "
@@ -416,7 +488,11 @@ if __name__ == "__main__":
                 f"of floats; got {args.ic_cole_hopf_coeffs!r}"
             ) from e
         validate_cole_hopf_coeffs(ch_coeffs)
-    u0 = construct_ic(x, args, nu, ch_coeffs)
+        u0 = initial_condition_cole_hopf_exact(x, ch_coeffs, nu, L_box=1.0)
+    else:
+        raise ValueError(f"Unknown IC: {args.ic}")
+    if args.ic_amplitude != 1.0:
+        u0 = u0 * args.ic_amplitude
     source_fn = {"sine": source_term_sine, "none": None}[args.source]
 
     # Shock formation time: t_shock = 1 / max|du0/dx| (inviscid estimate).
@@ -454,7 +530,7 @@ if __name__ == "__main__":
     #   1. --no-classical-reference: skip altogether.
     #   2. --ic cole_hopf_exact AND analytic_reference: closed-form
     #      u(x, t) from the Cole-Hopf analytic family (free, exact).
-    #   3. Otherwise: classical FTCS solve.
+    #   3. Otherwise: classical FTCS/Godunov solve.
     if not args.classical_reference:
         sols_classical = None
         t_classical = None
@@ -484,23 +560,14 @@ if __name__ == "__main__":
             file=sys.stderr, flush=True,
         )
     else:
-        # Resolved FTCS reference: run on a refined grid (>= --ref-points)
-        # whose nodes are an exact superset of the quantum grid, with the
-        # IC re-evaluated at that resolution, then subsample back to the
-        # quantum nodes.  Decouples reference accuracy from N=2^q.
-        x_ref, take = make_reference_grid(
-            x, bc=args.bc, min_points=args.ref_points,
-        )
-        u0_ref = construct_ic(x_ref, args, nu, ch_coeffs)
+        bl = args.classical_baseline
         print(
-            f"[burgers] running classical FTCS baseline on "
-            f"{len(x_ref)} pts (subsampled to N={N}) ...",
+            f"[burgers] running classical {bl.upper()} baseline ...",
             file=sys.stderr, flush=True,
         )
         t0 = time.time()
-        sols_classical = solve_burgers_subsampled(
-            u0_ref, x_ref, take, nu, dt, n_steps,
-            source_fn=source_fn, bc=args.bc,
+        sols_classical = solve_burgers(
+            u0, x, nu, dt, n_steps, source_fn=source_fn, bc=args.bc,
         )
         t_classical = time.time() - t0
         print(
@@ -546,17 +613,40 @@ if __name__ == "__main__":
         metric_transpile_timeout=args.metric_transpile_timeout,
         phi_modes=args.phi_modes,
         taylor_order=args.lcu_taylor_order,
+        fock_qubits=args.fock_qubits,
+        qalb_collision_trotter_reps=args.qalb_collision_trotter_reps,
         readout=args.readout,
         save_every=args.save_every,
         shock_pct=shock_pct,
     )
 
-    # Run selected method via solverfw
+    # Run selected method.  ftcs_reference is the shared classical
+    # reference promoted to a first-class method: resolved FTCS on a
+    # >= --ref-points grid (quantum nodes an exact subset), subsampled
+    # back to the q-grid.  It stores its solution_steps like any case so
+    # post-processors render it as the reference instead of recomputing.
     print(f"[burgers] running method={args.method} ...", file=sys.stderr, flush=True)
     t0 = time.time()
-    sols_method, step_metrics, genuine_steps = run_simulation_fw(
-        fw_config, grid, u0, source_fn=source_fn,
-    )
+    if args.method == "ftcs_reference":
+        x_ref, take = make_reference_grid(
+            x, bc=args.bc, min_points=args.ref_points,
+        )
+        u0_ref = construct_ic(x_ref, args, nu, ch_coeffs)
+        print(
+            f"[burgers] resolved FTCS reference on {len(x_ref)} pts "
+            f"(subsampled to N={N}) ...",
+            file=sys.stderr, flush=True,
+        )
+        sols_method = solve_burgers_subsampled(
+            u0_ref, x_ref, take, nu, dt, n_steps,
+            source_fn=source_fn, bc=args.bc,
+        )
+        step_metrics = None
+        genuine_steps = None
+    else:
+        sols_method, step_metrics, genuine_steps = run_simulation_fw(
+            fw_config, grid, u0, source_fn=source_fn,
+        )
     t_method = time.time() - t0
     print(f"[burgers] method done {t_method:.2f}s", file=sys.stderr, flush=True)
 

@@ -1,0 +1,88 @@
+
+# =====================================================================
+# A-B run 1 of 4 :  VISCOSITY SWEEP  (the corner map)
+# ---------------------------------------------------------------------
+# Question: where does each method win on L2 and on resources as nu
+# falls?  This is THE headline cut.
+#
+# Physics:
+#   CH  enemy = Cole-Hopf potential peakedness  phi ~ exp(A / 2*pi*nu).
+#       As nu falls, phi sharpens, shots can no longer resolve it, CH
+#       L2 degrades (FUTURE-WORK #10).  CH floor ~ nu=0.015 at A=0.3.
+#   QLBM enemy = stability tau = 0.5 + nu*N > 1; at fixed nu, tau GROWS
+#       with N=2^q, so QLBM stabilises as nu falls on a fine grid.
+#       Floor nu > 0.5/N = 0.00195 at q=8.  Carries a fixed ~0.11
+#       O(Omega^2)/step scheme gap that does NOT shrink with qc.
+#
+# Expected: CH L2 best then falls off a cliff between nu=0.015 and
+#   0.008; QLBM flat at its ~0.11 floor throughout, and the only method
+#   still standing at nu<=0.008.  Headline plot: L2 vs nu, log-y.
+#
+# q=8 -> #27.1 (LCU collision) REQUIRED for QLBM to finish in time.
+#   For a today-dry-run set --q = 6 below.
+# =====================================================================
+
+[global]
+# environmental
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+# FTCS reference owns the classical baseline (its own [ftcs_ref] case)
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+# time / alignment
+"--cfl" = 0.1                         # dt = cfl*dx; 10 fine steps / lattice step
+"--evolution-mode" = "measure_reprepare"
+
+# IC / BC
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3                # gentle wave, fixed for this cut
+
+# simulator
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+# resolution + window (fixed across the sweep so the only variable is nu)
+"--q" = 6                             # TODO = 8  (today-runnable dry-run at q=6)
+"--n-steps" = 50                      # TODO = 200  (n_steps ~ N, so q=8 -> 200)
+
+# NOTE on the sweep mechanism: the sweeper expands list-valued params only
+# inside a [group], then merges [global] on top (sweep.py:466-470).  So the
+# swept variable lives in EACH group block below, not in [global].  Here:
+#   --nu = [0.05, 0.03, 0.015, 0.008, 0.003]
+# spans CH-comfortable -> CH-floor (0.015) -> CH-broken; all tau>1 for QLBM.
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"       # exact per step, shallowest, scales in q
+"--bond-dim" = 4
+"--segment-size" = 5
+"--save-every" = 5
+"--nu" = [0.05, 0.03, 0.015, 0.008, 0.003]
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3                   # qc=2 too coarse; qc=3 convergent
+"--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
+"--nu" = [0.05, 0.03, 0.015, 0.008, 0.003]
+
+# classical D1Q3 LBM: shares QLBM's *scheme*, so QLBM-vs-lbm isolates the
+# quantum/Fock error and lbm-vs-FTCS isolates the scheme gap (SPEC 5).
+[lbm_classical]
+"--method" = "lbm"
+"--nu" = [0.05, 0.03, 0.015, 0.008, 0.003]
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 400
+"--nu" = [0.05, 0.03, 0.015, 0.008, 0.003]
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

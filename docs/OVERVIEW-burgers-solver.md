@@ -161,17 +161,21 @@ Method roster:
 | `cole_hopf` | Cole–Hopf | C | Classical reference for the CH pathway |
 | `cole_hopf_circuit` | Cole–Hopf | PQ | **Pure-quantum Pathway 2 (this work)** |
 | `lbm` | QLBM | C | Classical D1Q3 BGK (renamed from `qlbm` — pure classical, no shots) |
-| `qlbm_circuit` | QLBM | H | Quantum-circuit D1Q3 ("Option A": classical collision shadow + Householder dilation; statevector and shots both real) |
+| `qlbm_circuit` | QLBM | PQ | **Pure-quantum QALB (Itani-style; this work).** App B value/Fock encoding, normal-ordered Hermitised collision `e^{−iΔtĤ′}` (unitary, **no** post-selection) + streaming, `⟨q̂⟩` shots readout; `--fock-qubits` (qc, default 3). Collision is pure-quantum (no classical mirror); streaming classical, measure-reprepare k=1 today. See §5.3 and [SPEC](future/SPEC-qlbm-pure-quantum-qalb.md). |
+| `qlbm_circuit_linear` | QLBM | PQ | Linearised-BGK precursor (low-Mach, amplitude-encoded, fixed collision + measure-reprepare(k)); **loses shock physics**. See §5.4. |
+| `qlbm_circuit_hybrid` | QLBM | H | Retired hybrid D1Q3 ("Option A": classical collision shadow + Householder dilation; statevector and shots both real). Cross-validation oracle for the QALB. See §5.2. |
 
 The two **headline pathways** are Pathway 1 = `quantum_circuit`
 (hybrid; Pauli decomposition fit per step to a classical Euler
 reference, then Trotterised) and Pathway 2 = `cole_hopf_circuit`
-(the only pure-quantum pathway in the codebase; no classical mirror
-in the time loop after `φ₀` is prepared from `u₀`). They are the
-primary scientific objects of this codebase and are detailed
-mathematically in §§3.3 and 4.3. `qlbm_circuit` is the
-cross-comparison code from a different algorithmic family.
-`direct_lcu` (§3.7) is a third pure-quantum pathway: unlike
+(pure-quantum; no classical mirror in the time loop after `φ₀` is
+prepared from `u₀`). They are the primary scientific objects of this
+codebase and are detailed mathematically in §§3.3 and 4.3.
+`qlbm_circuit` is now the **pure-quantum QALB** (Itani-style; §5.3) —
+a third algorithmic family (kinetic) alongside direct-`u` and
+Cole–Hopf, with a state-independent Hermitised collision; the retired
+hybrid keeps the name `qlbm_circuit_hybrid`.
+`direct_lcu` (§3.7) is a further pure-quantum pathway: unlike
 `cole_hopf_circuit` it does **not** linearize away the nonlinearity —
 it block-encodes the conservative Burgers generator itself and refreshes
 the advection coefficient by measurement (measure-reprepare). All other
@@ -874,7 +878,11 @@ ignores `--shots` entirely and has no quantum content.  Module:
 `burgers_lbm.py`; integrator: `LBMIntegrator`; function:
 `run_lbm_simulation`.)
 
-### 5.2 `qlbm_circuit` (hybrid, quantum-circuit D1Q3)
+### 5.2 `qlbm_circuit_hybrid` (retired hybrid, quantum-circuit D1Q3)
+
+> The bare name `qlbm_circuit` now routes to the **pure-quantum QALB**
+> (§5.3); the hybrid "Option A" below keeps the explicit name
+> `qlbm_circuit_hybrid` and remains as the cross-validation oracle.
 
 The same D1Q3 algorithm as a quantum circuit on `q + 2` qubits (`q`
 position qubits + 2 velocity qubits, interleaved encoding `|v⟩|p⟩`).
@@ -896,12 +904,14 @@ Appendix A.A — fit a per-step unitary to a known classical update.
 The only pure-quantum pathway in this codebase remains
 `cole_hopf_circuit`.
 
-Three roads to a genuine pure-quantum QLBM are documented in
-FUTURE-WORK as alternative algorithms, not modifications of this
-method: #27 (Itani-style QALB), #28 (Carleman lift of BGK), and #29
-(linearised-BGK).  Option A here exists as a hybrid validation /
-cross-comparison tool, parallel to how `quantum_circuit` exists as
-the hybrid baseline for Pathway 1.
+Three roads to a genuine pure-quantum QLBM were scoped in FUTURE-WORK
+as alternative algorithms, not modifications of this method.  Two are
+now realised: **#27 (Itani-style QALB)** ships as the bare
+`qlbm_circuit` (§5.3), and **#29 (linearised-BGK)** as
+`qlbm_circuit_linear` (§5.4); #28 (Carleman) is subsumed by #27 (the
+QALB *is* a Carleman/Kowalski second-quantised scheme).  Option A here
+remains as a hybrid validation / cross-comparison oracle, parallel to
+how `quantum_circuit` is the hybrid baseline for Pathway 1.
 
 **Shots are real, not a fallback.** Statevector and shots both
 execute the same `build_qlbm_step_circuit` output.  The shots path
@@ -948,6 +958,80 @@ scale linearly with the noise floor rather than multiplicatively with
 `n_steps`.  See SPEC-qlbm-shots-and-sign-recovery.md for the full
 contract.
 
+### 5.3 `qlbm_circuit` (pure-quantum QALB, Itani-style)
+
+The realised pure-quantum QLBM (FUTURE-WORK #27), following Itani et
+al. (*Phys. Fluids* 36, 2024; arXiv:2304.05915). Module
+`burgers_qalb_circuit.py`; integrator `QALBIntegrator`; function
+`run_qalb_simulation`. Unlike the hybrid (§5.2), the collision is a
+**fixed, state-independent unitary** with **no classical
+`collide_bgk` mirror** in the loop.
+
+**Value/Fock encoding (App B).** Each density `δf_i = f_i − f_eq⁰`
+(rest equilibrium `f_eq⁰ = (0,1,0)`) is stored as the *value* in its
+own `qc`-qubit bosonic register: a vacuum displaced in the position
+quadrature, `|δf_i⟩ = e^{−i δf_i p̂}|0⟩` with
+`q̂ = (â+â†)/√2`, `p̂ = i(â†−â)/√2`, `[q̂,p̂]=iI`. Encode/decode is
+machine-precision; readout is the normalised expectation `⟨q̂_i⟩`.
+
+**Hermitised collision (Itani Eq. 79–86).** The D1Q3 BGK collision
+functional `Ω(q̂)` (this repo's density-conserving equilibrium) is
+written as the flow generator and split into a Hermitian part
+`Ĥ′ = ½ Σ_i (p̂_i Ω_i(q̂) + Ω_i(q̂) p̂_i)`. `e^{−iΔt Ĥ′}` is **exactly
+unitary** — applied per site, built **once**, no post-selection. The
+anti-Hermitian part is the *constant* divergence `−2/τ·I` (Eq. 83),
+recovered as a deterministic scalar deflation that cancels in the
+`⟨q̂⟩` ratio readout. **The quadratic collision term is normal-ordered**
+(`s² → s²−I`, subtracting the vacuum variance) — this is what makes the
+truncated Hermitised collision reproduce the classical flow; it
+converges in `qc` (single-cell error 0.073 → 0.027 → 0.0043 at
+qc = 2,3,4).
+
+**Architecture.** Per lattice step: apply the per-site collision
+unitary to each site, then **exact streaming** (a permutation). Shots
+mode prepares `|δf_i⟩`, applies `W = e^{−iΔt Ĥ′}`, rotates each register
+into the `q̂` eigenbasis, measures, and estimates `δf_i′ = ⟨q̂_i⟩` from
+the marginal counts (`cell_collision_shots`). Routes through the shared
+`q8020_cfd_qutil.circuit` helpers, so `--shots`, `--seed`,
+`--optimization-level`, `--backend-type` behave as elsewhere.
+`shots = 0` runs an operator/statevector-faithful collision instead.
+
+**Knobs / regime.**
+- `--fock-qubits` (qc, default 3). **qc = 2 is too coarse** — it
+  under-dissipates and the amplitude grows; qc = 3 tracks the
+  reference. qc = 4 is more faithful but costly.
+- Valid only for `τ > 1` (`Δt/τ < 1`); `τ ≤ 1` is Itani's divergent
+  regime (App A: no time-independent error bound) and emits a warning.
+- It is a **flow-LBM**: the state-independent collision realises the
+  *continuous* BGK flow, not the discrete Euler step, so it differs
+  from FTCS by an O(Ω²)/step **scheme gap** (~0.11 final error) that
+  does *not* shrink with qc — distinct from the Fock-truncation error
+  that does.
+
+**Status / honesty.** k = 1 measure-reprepare (measure every lattice
+step, reconstruct `f` classically, re-prepare); streaming is classical.
+The collision is a **dense `UnitaryGate`** today (~10⁴ depth at qc = 3),
+so it runs on a simulator but is **not yet hardware-viable** — the
+LCU/Trotter synthesis of `Ĥ′`, coherent `k > 1` segments, and backend
+wiring are open (see SPEC §3.7 and FUTURE-WORK #27). Gates 1–6 in the
+module's `__main__` validate encoding, collision convergence, the
+exact-unitary property, and shots-vs-statevector agreement.
+
+### 5.4 `qlbm_circuit_linear` (linearised-BGK precursor)
+
+Low-Mach pure-quantum precursor (FUTURE-WORK #29). Linearises BGK about
+the rest equilibrium, giving a **fixed linear collision** `M₃` on `δf`
+in the *amplitude* encoding (same `q+2`-qubit register as the hybrid) —
+so it needs no value/Fock re-encoding. Block-encoded collision +
+streaming run as `k`-step measure-reprepare segments
+(`burgers_qlbm_linear_circuit.py`, `_run_shots_segments`). Because the
+linear collision is amplitude-encoded and fixed, it does genuine
+`measure-reprepare(k)` like Cole–Hopf — the direct k-comparison vehicle.
+**Catch:** linearisation drops the `u²` nonlinearity, so it **loses
+shock physics** — valid only for smooth, low-Mach, near-equilibrium
+flow. A de-risking scaffold and pedagogical benchmark, not the
+production solver.
+
 ---
 
 ## 6. Comparative analysis
@@ -960,7 +1044,8 @@ contract.
 | Cole–Hopf (`cole_hopf_circuit`) | `qft-diagonal` | 240 | `O(2^q + q²)` |
 | Cole–Hopf (`cole_hopf_circuit`) | `dense-block` | 1 280 | `O(4^q)` |
 | Cole–Hopf (`cole_hopf_circuit`) | `lcu` | `O(M · q)` | `O(M · q)` |
-| QLBM (`qlbm_circuit`) | (Option A) | dense `O(N²)` collision per step | `O(N²)` (Option B/QSVT pending) |
+| QLBM (`qlbm_circuit`, QALB) | per-site `e^{−iΔtĤ′}` | dense `UnitaryGate` ~10⁴ depth/site (qc=3) × N sites | LCU/Trotter synthesis pending (FW #27) |
+| QLBM (`qlbm_circuit_hybrid`) | (Option A) | dense `O(N²)` collision per step | `O(N²)` |
 
 The LCU propagator with Bessel truncation order `M = 8` requires
 `m = ⌈log₂(17)⌉ = 5` ancilla qubits and 16 diagonal unitaries × `q`
@@ -1173,11 +1258,13 @@ metrics dict.
 | `cole_hopf` | `ColeHopfIntegrator` | `burgers_cole_hopf.run_cole_hopf_simulation` |
 | `cole_hopf_circuit` | `ColeHopfCircuitIntegrator` | `burgers_cole_hopf_circuit.run_cole_hopf_circuit_simulation` |
 | `lbm` | `LBMIntegrator` | `burgers_lbm.run_lbm_simulation` |
-| `qlbm_circuit` | `QLBMCircuitIntegrator` | `burgers_qlbm_circuit.run_qlbm_circuit_simulation` |
+| `qlbm_circuit` | `QALBIntegrator` | `burgers_qalb_circuit.run_qalb_simulation` |
+| `qlbm_circuit_linear` | `QLBMLinearCircuitIntegrator` | `burgers_qlbm_linear_circuit.run_qlbm_linear_simulation` |
+| `qlbm_circuit_hybrid` | `QLBMCircuitIntegrator` | `burgers_qlbm_circuit.run_qlbm_circuit_simulation` |
 
 The set of delegating methods is recorded as
-`_DELEGATING_METHODS = {"tebd", "cole_hopf", "cole_hopf_circuit",
-"lbm", "qlbm_circuit"}` in `burgers_fw.py`.
+`_DELEGATING_METHODS` in `burgers_fw.py` (includes `qlbm_circuit`,
+`qlbm_circuit_linear`, `qlbm_circuit_hybrid`).
 
 ### 8.4 Dispatcher
 
@@ -1294,7 +1381,7 @@ Method-to-module crosswalk for "where does the actual physics live":
 
 ### 10.1 Sweep harness (TOML)
 
-`input/burgers_quantum.toml` contains q8020-sweeper cases. A
+`input/Z-Keep/burgers_quantum.toml` contains q8020-sweeper cases. A
 representative one for the Cole–Hopf circuit on a forced run:
 
 ```toml

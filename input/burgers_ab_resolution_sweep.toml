@@ -1,0 +1,79 @@
+
+# =====================================================================
+# A-B run 3 of 4 :  RESOLUTION SWEEP  (the scaling / resource story)
+# ---------------------------------------------------------------------
+# Question: how do L2 *and* resources scale with grid size q?  Three
+# things move at once and tell three stories:
+#   CH    cost ~ O(2^q) conditional-Ry per step (64 -> 256 -> 512
+#         rotations); L2 stays converged (exact-via-transform).
+#   QLBM  tau = 0.5 + nu*N grows (5.4 -> 8.2 -> 15.9), so stability
+#         IMPROVES with q; but the ~0.11 scheme gap stays put -- it does
+#         not converge away with resolution.
+#   width CH = q+1 (9-10 qubits); QLBM k=1 per-site = 3*qc = 9; QLBM
+#         k>1 full-lattice = 3*qc+q+2+anc ~ 26-27 (the purity path).
+#
+# This is the depth/CX-per-step figure (the honest-cost metric).  The
+# physical time window is held EQUAL across q via --shock-pct (since
+# dt=cfl*dx changes with q), and --auto-cadence derives the aligned
+# measure-reprepare/save cadence from the resulting n_steps so QLBM and
+# CH still land on a common grid.
+#
+# q=8,9 -> #27.1 required for QLBM.  q=6 runs today; the q=6 case also
+# doubles as the dry-run that proves alignment + plotting end-to-end.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--auto-cadence" = true               # derive segment-size/save-every from n_steps
+
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--nu" = 0.03                         # fixed; tau grows with q on its own
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+# equal physical window across q (50% of t_shock=1/2pi); n_steps auto-
+# derived per q, cadence auto-aligned
+"--shock-pct" = 50.0
+
+# Swept variable lives in each [group] (sweeper expands group lists only,
+# then merges [global]; sweep.py:466-470).  Here:  --q = [6, 8, 9]
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 4
+# segment-size / save-every intentionally omitted -> set by --auto-cadence
+"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3
+"--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
+"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+
+[lbm_classical]
+"--method" = "lbm"
+"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800                  # finer than q=9 (512) to stay a faithful ref
+"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]
