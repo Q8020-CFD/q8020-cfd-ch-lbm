@@ -108,6 +108,10 @@ METHOD_STYLE = {
         'color': '#1f77b4', 'ls': '-', 'lw': 1.5,
         'label': 'FTCS (shift-operator)',
     },
+    'ftcs_reference': {
+        'color': '#000000', 'ls': '-', 'lw': 2.5,
+        'label': 'FTCS (reference)',
+    },
     'quantum_exact': {
         'color': '#ff7f0e', 'ls': '-', 'lw': 1.8,
         'label': 'Quantum exact (expm)',
@@ -173,6 +177,13 @@ def main() -> None:
     p.add_argument(
         '--no-ic', action='store_true',
         help="Do not draw the initial-condition line.",
+    )
+    p.add_argument(
+        '--reference', default='ftcs_reference',
+        help="Method name of the case whose stored solution_steps are the "
+             "classical reference (error baseline + reference curve). The "
+             "series is rendered as the reference, not as a method line. "
+             "Must be present in the sweep (run it as its own TOML case).",
     )
     args = p.parse_args()
     hidden = {m.strip() for m in args.hide.split(',') if m.strip()}
@@ -305,9 +316,42 @@ def main() -> None:
             )
             sys.exit(1)
 
+<<<<<<< Updated upstream
     if args.ref == 'ftcs' and ftcs_snaps is None:
         print(
             "--ref ftcs requested but no 'shift' method in the sweep.",
+=======
+    # Pull out the reference series.  The classical reference is a stored
+    # case (run once as its own TOML group) -- it is the error baseline and
+    # the reference curve, NOT a method line, so remove it from method_snaps
+    # and keep its snapshots separately.
+    ref_keys = [
+        k for k in method_snaps
+        if args.reference in {k, key_method[k], key_caseid.get(k)}
+    ]
+    if not ref_keys:
+        print(
+            f"--reference '{args.reference}' not among series "
+            f"{list(method_snaps)}; run it as its own case "
+            f"(e.g. --method ftcs_reference).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if len(ref_keys) > 1:
+        print(
+            f"--reference '{args.reference}' is ambiguous across "
+            f"{ref_keys}; pass a full series key.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    ref_key = ref_keys[0]
+    ref_snaps = method_snaps.pop(ref_key)
+    ref_label = key_style.get(ref_key, {}).get('label', 'FTCS (reference)')
+    if not method_snaps:
+        print(
+            f"Only the reference series '{ref_key}' present; "
+            "nothing to compare against it.",
+>>>>>>> Stashed changes
             file=sys.stderr,
         )
         sys.exit(1)
@@ -365,6 +409,7 @@ def main() -> None:
     }
     u0 = frames[next(iter(frames))][0].copy()
 
+<<<<<<< Updated upstream
     # Single reference curve.
     bc = anchor_meta.get('bc', 'periodic')
     if args.ref == 'ftcs':
@@ -380,6 +425,19 @@ def main() -> None:
             u0, x, nu, dt, n_steps_total, bc=bc,
         )
         frames_ref = [sols_godunov[int(k)] for k in step_keys_common]
+=======
+    # Reference curve: the stored ftcs_reference case, resampled onto the
+    # common timeline from its nearest snapshot (same q-grid, so no spatial
+    # interpolation).  No recomputation -- the reference is rendered, not
+    # regenerated, here.
+    bc = anchor_meta.get('bc', 'periodic')
+    print(
+        f"  Reference series: {ref_key} "
+        f"({len(ref_snaps)} stored snapshots)",
+        file=sys.stderr,
+    )
+    frames_ref = [_nearest(ref_snaps, s) for s in step_keys_common]
+>>>>>>> Stashed changes
 
     # Per-method divergence masking.  A single diverged method must not
     # collapse the whole animation: instead of globally truncating at the

@@ -68,6 +68,7 @@ class BurgersConfig(SolverConfig):
     encoding: str = "binary"
     evolution_mode: str = "single"
     segment_size: int = 10
+    fock_qubits: int = 3
     metric_transpile_timeout: float = 60.0
     phi_modes: int = 0
     taylor_order: int = 4
@@ -347,6 +348,58 @@ class QLBMCircuitIntegrator(_DelegatingIntegrator):
         )
 
 
+class QLBMLinearCircuitIntegrator(_DelegatingIntegrator):
+    """Linearised-BGK pure-quantum QLBM precursor (Phase 1, #29).
+
+    Fixed block-encoded collision + measure-reprepare(k=segment_size).
+    See docs/future/SPEC-qlbm-pure-quantum-qalb.md.
+    """
+
+    def __init__(self, backend: Any = None) -> None:
+        self.backend = backend
+
+    def _run_all(self, state, grid, config, dt):
+        from burgers_qlbm_linear_circuit import run_qlbm_linear_simulation
+
+        u0 = state.to_dense()
+        source_fn = getattr(config, "_source_fn", None)
+        return run_qlbm_linear_simulation(
+            u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
+            source_fn=source_fn,
+            shots=config.shots,
+            backend=self.backend,
+            sign_recovery=config.sign_recovery,
+            segment_size=config.segment_size,
+            optimization_level=config.optimization_level,
+            seed=config.seed,
+            metric_transpile_timeout=config.metric_transpile_timeout,
+        )
+
+
+class QALBIntegrator(_DelegatingIntegrator):
+    """Pure-quantum QALB (Phase 2, #27): state-independent App C
+    finite-position collision (built once, applied per site) + streaming.
+    See docs/future/SPEC-qlbm-pure-quantum-qalb.md.
+    """
+
+    def __init__(self, backend: Any = None) -> None:
+        self.backend = backend
+
+    def _run_all(self, state, grid, config, dt):
+        from burgers_qalb_circuit import run_qalb_simulation
+
+        u0 = state.to_dense()
+        source_fn = getattr(config, "_source_fn", None)
+        return run_qalb_simulation(
+            u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
+            source_fn=source_fn,
+            shots=config.shots,
+            backend=self.backend,
+            qc=getattr(config, "fock_qubits", 3),
+            seed=config.seed,
+        )
+
+
 class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
     """Cole-Hopf circuit (multi-step, owns its loop)."""
 
@@ -434,7 +487,7 @@ class DirectLCUIntegrator(_DelegatingIntegrator):
 # Methods that delegate their own multi-step loop.
 _DELEGATING_METHODS = {
     "tebd", "cole_hopf", "cole_hopf_circuit", "lbm", "qlbm_circuit",
-    "direct_lcu",
+    "qlbm_circuit_hybrid", "qlbm_circuit_linear", "direct_lcu",
 }
 
 
@@ -477,8 +530,15 @@ def make_integrator(
         return ColeHopfCircuitIntegrator()
     if m == "lbm":
         return LBMIntegrator()
-    if m == "qlbm_circuit":
+    # `qlbm_circuit` is now the pure-quantum QALB (Phase 2); the retired
+    # hybrid keeps the explicit `qlbm_circuit_hybrid` name (see
+    # docs/future/SPEC-qlbm-pure-quantum-qalb.md).
+    if m == "qlbm_circuit_hybrid":
         return QLBMCircuitIntegrator(backend)
+    if m == "qlbm_circuit":
+        return QALBIntegrator(backend)
+    if m == "qlbm_circuit_linear":
+        return QLBMLinearCircuitIntegrator(backend)
     if m == "direct_lcu":
         return DirectLCUIntegrator()
 

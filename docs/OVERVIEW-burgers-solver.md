@@ -151,7 +151,7 @@ Method roster:
 | `cole_hopf` | Cole–Hopf | C | Classical reference for the CH pathway |
 | `cole_hopf_circuit` | Cole–Hopf | PQ | **Pure-quantum Pathway 2 (this work)** |
 | `lbm` | QLBM | C | Classical D1Q3 BGK (renamed from `qlbm` — pure classical, no shots) |
-| `qlbm_circuit` | QLBM | H | Quantum-circuit D1Q3 ("Option A": classical collision shadow + Householder dilation; statevector and shots both real) |
+| `qlbm_circuit_hybrid` | QLBM | H | Retired hybrid D1Q3 ("Option A": classical collision shadow + Householder dilation; statevector and shots both real). Cross-validation oracle for the pure-quantum QALB. `qlbm_circuit` is a back-compat alias until QALB claims the bare name — see [docs/future/SPEC-qlbm-pure-quantum-qalb.md](future/SPEC-qlbm-pure-quantum-qalb.md). |
 
 The two **headline pathways** are Pathway 1 = `quantum_circuit`
 (hybrid; Pauli decomposition fit per step to a classical Euler

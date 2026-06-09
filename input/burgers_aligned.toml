@@ -1,0 +1,64 @@
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+
+# --- shared physics / grid (drives the alignment) ---
+"--q" = 6                       # N=64
+"--nu" = 3e-2                   # mid regime; sweep: 5e-2 / 3e-2 / 1e-2 / 1e-3
+"--cfl" = 0.1                   # dt = cfl*dx; 1/cfl = 10 lattice-step cadence
+"--n-steps" = 100               # multiple of 10 -> QLBM endpoint is EXACT
+"--bc" = "periodic"             # same dx for all methods
+"--ic" = "sine"                 # u0 = A*sin(2*pi*x)
+"--ic-amplitude" = 0.3          # sweep: 0.3 / 0.5 / 0.8
+"--source" = "none"
+"--shots" = 150000
+"--seed" = 1234                 # reproducible shots (all methods)
+
+
+# --- reference: FTCS as its OWN case (see [ftcs_ref]), run once ---
+"--no-classical-reference" = true  # no per-method FTCS; [ftcs_ref] owns it
+"--no-analytic-reference" = true   # moot under no-classical, kept explicit
+"--ref-points" = 200               # -> 256-pt grid at q=6; sweep: 400 / 1000
+
+# --- alignment cadence (explicit; = what --auto-cadence would compute) ---
+# segment-size = nearest_divisor(n_steps=100, preferred=7) = 5; divides QLBM's
+# 10-step cadence so CH/FTCS snapshot at every QLBM lattice time.  Also the
+# measure_reprepare segment length (re-prep every 5 steps).
+"--segment-size" = 5
+"--save-every" = 5
+
+# REQUIRED for bounded runtime: cap per-circuit metric transpile (depth/gate
+# counts only -- never affects results).  Uncapped (0) can run for hours.
+"--metric-transpile-timeout" = 15
+
+
+#[cole_hopf_circuit]
+#"--method" = "cole_hopf_circuit"
+#"--propagator" = "qft-diagonal"      # exact per step, shallowest, scales in q
+# setting to 2 rather than preferred 4 since otherwise CH will have use of 1 more qubit
+# than qlbm
+#"--bond-dim" = 2                     # converged for smooth phi; SWAP: [4, 8]
+#"--evolution-mode" = "measure_reprepare"   # segments of 5 steps, re-prep between
+#"--readout" = "direct"               # phi >= 0 -> no sign recovery needed
+
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 2             # QALB Fock qubits/density; qc=2 too coarse.
+                               # NB qc=3 -> dense 9-qubit collision/site
+                               # (~14k depth x 64 sites x 10 steps): slow.
+
+
+# Shared classical reference: resolved FTCS on a >= --ref-points grid,
+# sub-sampled to the q-grid -- run ONCE here, rendered by the postproc.
+[ftcs_ref]
+"--method" = "ftcs_reference"        # owns the FTCS reference for the sweep
+
+
+# Postproc: overlay CH + QLBM vs the [ftcs_ref] reference (anchor QLBM's
+# coarse time grid).  --reference defaults to ftcs_reference.
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --no-ic"]
