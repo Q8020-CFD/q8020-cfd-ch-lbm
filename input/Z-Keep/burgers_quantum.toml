@@ -3,7 +3,7 @@
 # This is a max-case TOML - we've since broken out into separate TOMLs for per-case 
 # clarity, but this kept for reference.
 #
-# Run: q8020-sweep q8020-mps-burgers/input/burgers_quantum.toml
+# Run: q8020-sweep q8020-mps-burgers/input/Z-Keep/burgers_quantum.toml
 #
 # shock_pct=63.0 → T_end ≈ 0.1006 (63% of t_shock = 1/2π ≈ 0.1592)
 # n_steps = T_end / (CFL * dx) = T_end * N / CFL   (CFL = Courant-Friedrichs-Lewy number)

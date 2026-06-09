@@ -362,6 +362,16 @@ if __name__ == "__main__":
         help="Taylor truncation order for LCU propagator",
     )
     parser.add_argument(
+        "--qalb-collision-trotter-reps", type=int, default=0,
+        help=(
+            "qlbm_circuit (QALB) shots collision synthesis (#27.1): 0 = "
+            "dense UnitaryGate of e^{-iT H'} (exact); >0 = Suzuki-Trotter "
+            "of the Pauli H' at this rep count (hardware-honest depth, "
+            "uses --trotter-order).  Order-2 error ~ 1/reps²; reps~4 sits "
+            "below the qc=2 Fock-truncation floor."
+        ),
+    )
+    parser.add_argument(
         "--fock-qubits", type=int, default=3,
         help=(
             "Bosonic Fock qubits per density register for qlbm_circuit "
@@ -610,6 +620,7 @@ if __name__ == "__main__":
         phi_modes=args.phi_modes,
         taylor_order=args.lcu_taylor_order,
         fock_qubits=args.fock_qubits,
+        qalb_collision_trotter_reps=args.qalb_collision_trotter_reps,
         readout=args.readout,
         save_every=args.save_every,
         shock_pct=shock_pct,

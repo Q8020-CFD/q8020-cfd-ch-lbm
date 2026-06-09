@@ -27,16 +27,26 @@ Construction (validated to machine precision, see __main__):
     which cancels the constant-divergence deflation) to the classical
     collision flow to ~1e-13.
 
+Hardware-honest collision synthesis (future-work #27.1, DONE): the dense
+per-site UnitaryGate of e^{-iΔt Ĥ'} (Quantum-Shannon synthesis, ~4^(3qc)
+depth) is replaceable by a Suzuki-Trotter circuit of the Pauli
+decomposition of Ĥ' (`cell_collision_gate(..., trotter_reps>0)`) -- a
+single position-free unitary on exactly 3*qc qubits, NO ancilla, exactly
+unitary (no post-selection, unlike an LCU block-encoding).  Order-2
+Trotter error ∝ 1/reps²; reps≈4 sits below the qc=2 Fock-truncation
+floor.  The 3*qc / kron(reg_-1,reg_0,reg_+1) interface is frozen -- the
+#27.2 transducer + streaming compose against exactly that.
+
 Open (spec §7): log-depth streaming on the position register,
-measure-reprepare(k) across lattice steps, the unitary/Hermitised
-circuit synthesis of the flow (Trotter/LCU of Eq 85 with the explicit
-deflation for the norm), and assembly into `--method qlbm_circuit`.
+measure-reprepare(k) across lattice steps, and assembly into
+`--method qlbm_circuit`.
 """
 
 from __future__ import annotations
 
 import sys
 import time
+from functools import lru_cache
 from typing import Any, Callable
 
 import numpy as np
@@ -53,6 +63,9 @@ from burgers_lbm import (
 
 
 F_EQ0 = np.array([0.0, 1.0, 0.0])     # rest equilibrium (this repo's form)
+
+# Hardware-cost reporting basis (cx-dominant), matches burgers_qlbm_circuit.
+_METRIC_BASIS = ["cx", "rz", "sx", "x"]
 
 
 # ── App C finite-position embedding (Eq C1-C43) ───────────────────────
@@ -302,23 +315,80 @@ def decode_cell_B(psi: np.ndarray, q: np.ndarray) -> np.ndarray:
                      for i in range(3)])
 
 
+@lru_cache(maxsize=None)
 def cell_collision_unitary_B(tau: float, qc: int,
                              collision_time: float) -> np.ndarray:
     """Per-site Hermitised collision unitary U=e^{-i T H'} on 3*qc qubits
-    (Itani Eq 85).  Exactly unitary -> shots without post-selection."""
+    (Itani Eq 85).  Exactly unitary -> shots without post-selection.
+    State-independent, so cached and reused across every site/step."""
     q, p, _ = osc_ops(qc)
     H = hermitised_collision_hamiltonian(q, p, tau)
     return expm(-1j * collision_time * H)
 
 
+# ── #27.1: hardware-honest Trotter synthesis of the collision unitary ─
+#
+# The dense UnitaryGate of e^{-iT H'} above is exact but Quantum-Shannon
+# synthesises to ~4^(3qc) CX (~10⁴ depth at qc=3).  Ĥ' is a fixed sparse
+# Hermitian operator, so decompose it into Pauli words and synthesise
+# e^{-iT H'} by Suzuki-Trotter (Itani §IX / SPEC §3.7).  This keeps the
+# App B virtue -- a single 3*qc-qubit unitary, NO ancilla, exactly
+# unitary (no post-selection) -- unlike an LCU block-encoding, which
+# would reintroduce an ancilla and post-selection.  Depth/accuracy trade
+# off via (trotter_order, trotter_reps); order-2 error ∝ 1/reps².
+
+
+@lru_cache(maxsize=None)
+def collision_hamiltonian_pauli(tau: float, qc: int):
+    """Pauli decomposition (SparsePauliOp) of the Hermitised collision
+    Hamiltonian Ĥ' (Itani Eq 85) on 3*qc qubits.  Built once; the
+    coefficients are real since Ĥ' is Hermitian."""
+    from qiskit.quantum_info import Operator, SparsePauliOp
+    q, p, _ = osc_ops(qc)
+    H = hermitised_collision_hamiltonian(q, p, tau)
+    return SparsePauliOp.from_operator(Operator(H)).simplify()
+
+
+@lru_cache(maxsize=None)
+def cell_collision_gate(tau: float, qc: int, collision_time: float,
+                        trotter_reps: int = 0, trotter_order: int = 2):
+    """Per-site collision as a Qiskit gate on exactly 3*qc qubits -- a
+    position-free, ancilla-free, exactly-unitary block (the frozen
+    interface the #27.2 transducer + streaming compose against).
+
+      trotter_reps == 0 : dense UnitaryGate of e^{-iT H'} (Quantum-Shannon
+                          synthesis; exact, but ~4^(3qc) CX).
+      trotter_reps  > 0 : Suzuki/Lie-Trotter synthesis of the Pauli Ĥ'
+                          (#27.1); tunable depth vs accuracy.
+
+    Cached: state-independent, so built once and reused per site/step."""
+    from qiskit import QuantumCircuit
+    from qiskit.circuit.library import PauliEvolutionGate, UnitaryGate
+    n = 3 * qc
+    if trotter_reps <= 0:
+        return UnitaryGate(cell_collision_unitary_B(tau, qc, collision_time),
+                           label="W")
+    from qiskit.synthesis import LieTrotter, SuzukiTrotter
+    spo = collision_hamiltonian_pauli(tau, qc)
+    synth = (LieTrotter(reps=trotter_reps) if trotter_order == 1
+             else SuzukiTrotter(order=trotter_order, reps=trotter_reps))
+    evo = PauliEvolutionGate(spo, time=collision_time, synthesis=synth)
+    circ = QuantumCircuit(n, name="qalb_collide_trotter")
+    circ.append(evo, range(n))
+    return circ.to_gate(label=f"Wtrot(r={trotter_reps})")
+
+
 def cell_collision_shots(
     df3: np.ndarray, tau: float, qc: int, collision_time: float,
     shots: int, backend: Any = None, seed: int | None = None,
+    trotter_reps: int = 0, trotter_order: int = 2,
 ) -> np.ndarray:
-    """Per-site collision on SHOTS, no post-selection (W is unitary):
-    prepare |δf>, apply W=e^{-iT H'}, rotate each density register into
-    the q̂ eigenbasis, measure 3*qc qubits, and estimate δf_i'=<q̂_i> from
-    the marginal counts.  RAM-safe (3*qc qubits)."""
+    """Per-site collision on SHOTS, no post-selection (the collision is
+    unitary): prepare |δf>, apply the collision gate, rotate each density
+    register into the q̂ eigenbasis, measure 3*qc qubits, and estimate
+    δf_i'=<q̂_i> from the marginal counts.  RAM-safe (3*qc qubits).
+    trotter_reps>0 selects the #27.1 Trotter synthesis of e^{-iT H'}
+    (hardware-honest depth) over the dense UnitaryGate."""
     from qiskit import QuantumCircuit
     from qiskit.circuit.library import UnitaryGate
     from q8020_cfd_qutil.circuit import (
@@ -329,14 +399,15 @@ def cell_collision_shots(
         from qiskit_aer import AerSimulator
         backend = AerSimulator()
     q, p, vac = osc_ops(qc)
-    W = cell_collision_unitary_B(tau, qc, collision_time)
+    gate = cell_collision_gate(tau, qc, collision_time,
+                               trotter_reps, trotter_order)
     lam, V = np.linalg.eigh(q)                # q̂ = V diag(lam) V†
     Vd = V.conj().T                           # eigenbasis -> computational
     n = 3 * qc
     psi = encode_cell_B(df3, p, vac)
     circ = QuantumCircuit(n, n)
     circ.initialize(psi.tolist(), range(n))
-    circ.append(UnitaryGate(W, label="W"), range(n))
+    circ.append(gate, range(n))
     for i in range(3):
         circ.append(UnitaryGate(Vd, label="Vd"), range(i * qc, (i + 1) * qc))
     circ.measure(range(n), range(n))
@@ -358,6 +429,45 @@ def cell_collision_shots(
 # ── Full lattice: pure-quantum collision (state-independent) + stream ─
 
 
+def _qalb_cell_metric(
+    tau: float, qc: int, collision_time: float,
+    trotter_reps: int, trotter_order: int, seed: int | None,
+) -> dict | None:
+    """Hardware-honest cost of one per-site shots collision circuit
+    (representative equilibrium prep + collision gate + q̂-basis rotations),
+    decomposed to the cx-dominant metric basis.  Returns
+    {n_qubits, circuit_depth, gate_counts} or None if transpile fails."""
+    try:
+        from qiskit import QuantumCircuit
+        from qiskit.circuit.library import UnitaryGate
+        from q8020_cfd_qutil.circuit import circuit_stats_in_basis
+
+        qosc, posc, vac = osc_ops(qc)
+        gate = cell_collision_gate(
+            tau, qc, collision_time, trotter_reps, trotter_order,
+        )
+        _, Vq = np.linalg.eigh(qosc)
+        Vd = Vq.conj().T
+        n = 3 * qc
+        mc = QuantumCircuit(n)
+        mc.initialize(
+            encode_cell_B(np.zeros(3), posc, vac).tolist(), range(n),
+        )
+        mc.append(gate, range(n))
+        for i in range(3):
+            mc.append(UnitaryGate(Vd, label="Vd"), range(i * qc, (i + 1) * qc))
+        info = circuit_stats_in_basis(mc, _METRIC_BASIS, seed_transpiler=seed)
+        return {
+            "n_qubits": info["num_qubits"],
+            "circuit_depth": info["depth"],
+            "gate_counts": info["gate_counts"],
+        }
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        print(f"[qlbm_circuit] cell metric transpile failed: {e}",
+              file=sys.stderr)
+        return None
+
+
 def run_qalb_simulation(
     u0: np.ndarray,
     x: np.ndarray,
@@ -371,6 +481,8 @@ def run_qalb_simulation(
     qc: int = 3,
     collision_time: float | None = None,
     seed: int | None = None,
+    trotter_reps: int = 0,
+    trotter_order: int = 2,
     **_ignored: Any,
 ) -> tuple[list[np.ndarray], list[dict], list[int]]:
     """Pure-quantum QALB: per-site quantum collision via the App C flow
@@ -411,7 +523,12 @@ def run_qalb_simulation(
               ">1) is the QALB divergent regime (Itani App A); multi-step "
               "results are unreliable -- raise nu, q, or qc.", file=sys.stderr)
 
-    path = "shots" if shots else "operator"
+    if shots:
+        synth = (f"trotter(o={trotter_order},r={trotter_reps})"
+                 if trotter_reps else "dense")
+        path = f"shots/{synth}"
+    else:
+        path = "operator"
     print(
         f"[qlbm_circuit] (QALB) q={q} N={N} tau={tau:.4f} qc={qc} "
         f"n_steps_lbm={n_steps_lbm} collision_time={collision_time} "
@@ -426,17 +543,26 @@ def run_qalb_simulation(
     U = None if shots else expm(collision_time
                                 * collision_flow_generator(qop, D, tau))
 
+    # Per-site collision circuit cost (state-independent -> measured once,
+    # reported per step).  Only the shots path builds/executes real circuits;
+    # the operator path is a statevector idealisation with no circuit cost.
+    cell_metric = _qalb_cell_metric(
+        tau, qc, collision_time, trotter_reps, trotter_order, seed,
+    ) if shots else None
+
     f = equilibrium(u0)
     lbm_solutions = [u0.copy()]
     metrics: list[dict] = []
     t0 = time.time()
     for step in range(1, n_steps_lbm + 1):
+        t_step = time.time()
         df = f - F_EQ0[:, None]
         for site in range(N):
             if shots:
                 df[:, site] = cell_collision_shots(
                     df[:, site], tau, qc, collision_time, shots,
                     backend=backend, seed=seed,
+                    trotter_reps=trotter_reps, trotter_order=trotter_order,
                 )
             else:
                 df[:, site] = decode_cell(U @ encode_cell(df[:, site], polys), qc)
@@ -444,10 +570,23 @@ def run_qalb_simulation(
         f = stream(f, bc=bc)
         u_cur = velocity(f)
         lbm_solutions.append(u_cur.copy())
-        metrics.append({
-            "step": step, "u_max": float(np.max(np.abs(u_cur))),
+        # Report step in the CALLER'S fine-step frame (lattice step lands on
+        # fine step round(step*dt_lbm/dt)) so metrics align with the stored
+        # snapshot timeline; otherwise lattice steps 1..n_steps_lbm collapse
+        # into the first few % of a 0..n_steps axis.
+        caller_step = min(int(round(step * dt_lbm / dt)), n_steps)
+        rec = {
+            "step": caller_step, "lattice_step": step,
+            "u_max": float(np.max(np.abs(u_cur))),
             "rho_mean": float(np.mean(density(f))), "qc": qc, "path": path,
-        })
+        }
+        if shots:
+            # One collision circuit per lattice site, executed this step.
+            rec["n_circuits"] = N
+            rec["execution_time_s"] = time.time() - t_step
+            if cell_metric:
+                rec.update(cell_metric)
+        metrics.append(rec)
     metrics_total_s = time.time() - t0
 
     solutions = [u0.copy()]
@@ -586,3 +725,43 @@ if __name__ == "__main__":
     print(f"   qc={qcs} shots={nshots}: |shots-statevector|={worst_sv:.3e} "
           f"(tol~{tol:.1e}, {'PASS' if worst_sv < tol else 'CHECK'})  "
           f"|shots-classical|={worst_cl:.3e}")
+
+    print("[gate7] #27.1 Trotter synthesis of e^{-iT H'} (hardware-honest "
+          "depth, no ancilla, no post-selection) vs dense UnitaryGate")
+    from qiskit import QuantumCircuit, transpile
+    from qiskit.quantum_info import Operator
+    qc7 = 2
+    n7 = 3 * qc7
+    q7, p7, vac7 = osc_ops(qc7)
+    spo = collision_hamiltonian_pauli(tau, qc7)
+    W_dense = cell_collision_unitary_B(tau, qc7, 1.0)
+    dense_gate = cell_collision_gate(tau, qc7, 1.0, trotter_reps=0)
+    dc = QuantumCircuit(n7)
+    dc.append(dense_gate, range(n7))
+    dt_tp = transpile(dc, basis_gates=["u", "cx"], optimization_level=1)
+    dfs7 = (np.array([0.03, -0.05, 0.02]), np.array([0.06, -0.10, 0.04]),
+            np.array([0.15, -0.07, 0.10]))
+
+    def decode_dense(df):
+        return decode_cell_B(W_dense @ encode_cell_B(df, p7, vac7), q7)
+    floor = max(float(np.max(np.abs(decode_dense(df) - classical_flow(df, 1.0))))
+                for df in dfs7)
+    print(f"   qc={qc7}: H' -> {len(spo)} Pauli terms;  dense UnitaryGate "
+          f"depth={dt_tp.depth()} cx={dt_tp.count_ops().get('cx', 0)};  "
+          f"qc=2 Fock-truncation floor={floor:.2e}")
+    for order, reps in ((2, 1), (2, 2), (2, 4), (2, 8)):
+        gate = cell_collision_gate(tau, qc7, 1.0, reps, order)
+        tc = QuantumCircuit(n7)
+        tc.append(gate, range(n7))
+        tc_tp = transpile(tc, basis_gates=["u", "cx"], optimization_level=1)
+        Wt = Operator(tc.decompose(reps=4)).data
+        # physical decode error vs the dense unitary (the full-space
+        # operator 2-norm is dominated by the unused high-Fock corner)
+        e_vs_dense = max(
+            float(np.max(np.abs(decode_cell_B(Wt @ encode_cell_B(df, p7, vac7),
+                                              q7) - decode_dense(df))))
+            for df in dfs7)
+        ok = "PASS (< floor)" if e_vs_dense < floor else ""
+        print(f"   order={order} reps={reps}: depth={tc_tp.depth()} "
+              f"cx={tc_tp.count_ops().get('cx', 0)}  decode err vs dense="
+              f"{e_vs_dense:.2e} {ok}")

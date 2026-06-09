@@ -88,6 +88,38 @@ def _case_flag(meta: dict, cli_flag: str) -> str | None:
     return None
 
 
+def _analysis(meta: dict) -> dict:
+    """The harvested 'analysis' fragment carrying the resource metrics
+    (n_qubits, avg_circuit_depth, n_circuits_executed, runtime ...)."""
+    frags = meta.get('analysis', [])
+    for a in frags:
+        if isinstance(a, dict) and (
+            a.get('n_qubits') is not None
+            or a.get('avg_circuit_depth') is not None
+            or a.get('n_circuits_executed')
+        ):
+            return a
+    for a in frags:
+        if isinstance(a, dict):
+            return a
+    return {}
+
+
+# Flags a sweep may vary; the first that differs across the resource-bearing
+# cases becomes the x-axis of the resource panel.
+SWEEP_FLAGS = ['--nu', '--ic-amplitude', '--q', '--fock-qubits']
+
+
+def _detect_swept(cands: list[dict]) -> tuple[str | None, list[str | None]]:
+    for flag in SWEEP_FLAGS:
+        vals = [_case_flag(e['case'], flag) for e in cands]
+        if any(v is None for v in vals):
+            continue
+        if len(set(vals)) > 1:
+            return flag, vals
+    return None, [None] * len(cands)
+
+
 def _load_cases(sweep_dir: Path) -> list[dict]:
     case_dirs, no_meta = _walk_case_dirs(sweep_dir)
     out = []
@@ -126,7 +158,7 @@ METHOD_STYLE = {
     },
     'cole_hopf_circuit': {
         'color': '#17becf', 'ls': '-', 'lw': 2.0,
-        'label': 'Cole-Hopf circuit (pure-quantum)',
+        'label': 'Cole-Hopf',
     },
     'lbm': {
         'color': '#d62728', 'ls': '--', 'lw': 1.5,
@@ -134,13 +166,207 @@ METHOD_STYLE = {
     },
     'qlbm_circuit': {
         'color': '#d62728', 'ls': '-', 'lw': 2.0,
-        'label': 'LBM circuit (hybrid, Option A)',
+        'label': 'QLBM',
     },
     'direct_lcu': {
         'color': '#8c564b', 'ls': '-', 'lw': 2.0,
         'label': 'Direct-u LCU (conservative)',
     },
 }
+
+
+# ── Circuit resources accumulate per measure-reprepare segment ─────────
+# Each segment runs a circuit, so depth / CX / circuit-count / runtime grow
+# segment-by-segment.  per_step_metrics carries one entry per segment, tagged
+# with the timestep it ends on, so we can (a) animate cumulative curves vs
+# time in the movie and (b) bar the final totals in the standalone PNG.
+# Width (# qubits) is the only constant.
+
+def _sm_depth(m: dict):
+    after = (m.get('transpile') or {}).get('after') or {}
+    return m.get('circuit_depth', after.get('depth'))
+
+
+def _sm_cx(m: dict):
+    after = (m.get('transpile') or {}).get('after') or {}
+    g = m.get('gate_counts', after.get('gate_counts')) or {}
+    return g.get('cx')
+
+
+def _sm_circuits(m: dict):
+    return m.get('n_circuits', 0) or 0
+
+
+def _sm_runtime(m: dict):
+    tr = (m.get('transpile') or {}).get('wall_time', 0) or 0
+    ex = (m.get('execute') or {}).get('wall_time', 0) or 0
+    return (
+        (m.get('execution_time_s') or ex)
+        + (m.get('transpilation_time_s') or tr)
+        + (m.get('circuit_construction_time_s') or 0)
+    )
+
+
+# Time-varying metrics, animated as cumulative curves: (title, increment fn).
+CUM_METRICS = [
+    ('cumulative depth', _sm_depth),
+    ('cumulative CX', _sm_cx),
+    ('# circuits (cumulative)', _sm_circuits),
+    ('sim runtime (s, cumulative)', _sm_runtime),
+]
+
+
+def _sval_sort_key(v):
+    try:
+        return (0, float(v))
+    except (TypeError, ValueError):
+        return (1, str(v))
+
+
+def _psm(case: dict) -> list:
+    return _analysis(case).get('per_step_metrics') or []
+
+
+def _series_total(case: dict, fn) -> float:
+    return float(sum((fn(m) or 0.0) for m in _psm(case)))
+
+
+def _series_native(case: dict, fn, dt: float):
+    """Native (segment_time, cumulative) points at the series' OWN segment
+    cadence -- no resampling to a coarser timeline, so a fine-cadence method
+    keeps full resolution.  A (t=0, 0) baseline is prepended so every series
+    starts at the common origin and rises at its own first segment."""
+    pairs = sorted(
+        (m.get('step'), fn(m)) for m in _psm(case) if m.get('step') is not None
+    )
+    if not pairs:
+        return np.array([]), np.array([])
+    t = np.array([0.0] + [p[0] * dt for p in pairs])
+    cum = np.concatenate(([0.0], np.cumsum([(p[1] or 0.0) for p in pairs])))
+    return t, cum
+
+
+def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
+    """Cumulative-resource artists, each drawn at its OWN segment cadence.
+    Coarse series (few segments, e.g. QLBM) get a marked staircase; dense
+    series (e.g. CH) get a smooth line.  Curves start at the first segment so
+    they sit left.  Returns {(metric_idx, key): (line, t_arr, cum)}."""
+    seg_counts = {
+        s['key']: len([m for m in _psm(s['case']) if m.get('step') is not None])
+        for s in series
+    }
+    max_pts = max(seg_counts.values(), default=1)
+    first_t: list[float] = []
+    artists = {}
+    for mi, (title, fn) in enumerate(CUM_METRICS):
+        ax = res_axes[mi]
+        ymax = 0.0
+        for s in series:
+            t, cum = _series_native(s['case'], fn, dt)
+            if t.size:
+                ymax = max(ymax, float(cum.max()))
+                first_t.append(float(t[0]))
+            sty = key_style[s['key']]
+            coarse = seg_counts[s['key']] < 0.6 * max_pts
+            ln, = ax.plot(
+                [] if animated else t,
+                [] if animated else cum,
+                color=sty['color'], ls=sty['ls'], lw=1.6,
+                drawstyle='steps-post' if coarse else 'default',
+                marker='o' if coarse else None, ms=3,
+                label=sty['label'],
+            )
+            artists[(mi, s['key'])] = (ln, t, cum)
+        ax.set_title(title, fontsize=9)
+        ax.set_ylim(0, ymax * 1.15 if ymax > 0 else 1.0)
+        ax.set_xlabel("simulation time", fontsize=8)
+        ax.tick_params(labelsize=8)
+        ax.grid(alpha=0.2)
+    left = min(first_t) if first_t else 0.0   # start at the first segment
+    for ax in res_axes:
+        ax.set_xlim(left, t_end)
+    if res_axes:
+        res_axes[0].legend(fontsize=7, loc='upper left')
+    return artists
+
+
+def plot_resource_panel(candidates: list[dict], out_path: Path) -> None:
+    """Standalone PNG: final accumulated resource totals as grouped bars."""
+    circ = [
+        e for e in candidates
+        if _analysis(e['case']).get('n_qubits') is not None
+    ]
+    if not circ or not any(_psm(e['case']) for e in circ):
+        print("No circuit per-step metrics; skipping resource panel.",
+              file=sys.stderr)
+        return
+    swept_flag, _ = _detect_swept(circ)
+    for e in circ:
+        e['sval'] = (
+            _case_flag(e['case'], swept_flag) if swept_flag else e['method']
+        )
+    methods = sorted({e['method'] for e in circ})
+    cats = sorted({e['sval'] for e in circ}, key=_sval_sort_key)
+    by = {(e['method'], e['sval']): e['case'] for e in circ}
+
+    # (title, per-segment fn or 'nq' for the constant width, is_int)
+    bar_metrics = [
+        ('# qubits (width)', 'nq', True),
+        ('# circuits (total)', _sm_circuits, True),
+        ('cumulative depth', _sm_depth, False),
+        ('cumulative CX', _sm_cx, False),
+        ('sim runtime (s)', _sm_runtime, False),
+    ]
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    axes = axes.ravel()
+    bw = 0.8 / max(len(methods), 1)
+    xpos = np.arange(len(cats))
+    for ax, (title, fn, is_int) in zip(axes, bar_metrics):
+        for mi, method in enumerate(methods):
+            ys = []
+            for c in cats:
+                case = by.get((method, c))
+                if case is None:
+                    ys.append(None)
+                elif fn == 'nq':
+                    ys.append(_analysis(case).get('n_qubits'))
+                else:
+                    ys.append(_series_total(case, fn))
+            xs = xpos + (mi - (len(methods) - 1) / 2) * bw
+            xs_p = [x for x, y in zip(xs, ys) if y is not None]
+            ys_p = [y for y in ys if y is not None]
+            if not ys_p:
+                continue
+            sty = METHOD_STYLE.get(method, {})
+            bars = ax.bar(
+                xs_p, ys_p, bw,
+                color=sty.get('color', f'C{mi}'),
+                label=sty.get('label', method),
+            )
+            ax.bar_label(
+                bars,
+                labels=[f"{y:.0f}" if is_int else f"{y:.3g}" for y in ys_p],
+                fontsize=6, padding=1,
+            )
+        ax.set_title(title, fontsize=10)
+        ax.set_xticks(xpos)
+        ax.set_xticklabels([str(c) for c in cats], fontsize=8)
+        if swept_flag:
+            ax.set_xlabel(swept_flag.lstrip('-'), fontsize=8)
+        ax.grid(axis='y', ls=':', alpha=0.4)
+    axes[-1].set_visible(False)
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles, labels, loc='lower center',
+            ncol=len(labels), fontsize=9, frameon=False,
+        )
+    sweep_txt = f" vs {swept_flag.lstrip('-')}" if swept_flag else ""
+    fig.suptitle(f"Accumulated circuit resources{sweep_txt}", y=0.99)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.96))
+    fig.savefig(out_path, dpi=120, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved resource panel to {out_path}")
 
 
 def main() -> None:
@@ -177,6 +403,11 @@ def main() -> None:
     p.add_argument(
         '--no-ic', action='store_true',
         help="Do not draw the initial-condition line.",
+    )
+    p.add_argument(
+        '--no-resources', action='store_true',
+        help="Skip the circuit resource-utilization panel "
+             "(<outfile>_resources.png).",
     )
     p.add_argument(
         '--reference', default='ftcs_reference',
@@ -251,6 +482,9 @@ def main() -> None:
             st['ls'] = LS_CYCLE[i % len(LS_CYCLE)]
             st['label'] = f"{base['label']} [{tag}]"
             key_style[key] = st
+
+    # Series key -> case meta, for pulling per-step resource metrics later.
+    key_case = {e['key']: e['case'] for e in candidates if e.get('key')}
 
     if len(candidates) < 2:
         print(
@@ -454,10 +688,27 @@ def main() -> None:
     ymax = (max(finite_maxes) if finite_maxes else 1.0) * 1.15
     times = np.array([int(k) * dt for k in step_keys_common])
 
-    fig, (ax_u, ax_err) = plt.subplots(
-        2, 1, figsize=(10, 6.5),
-        gridspec_kw={"height_ratios": [3, 1]},
-    )
+    # Circuit-bearing series (those reporting n_qubits) get an animated
+    # cumulative-resource block embedded to the right of the u/error panels.
+    circ_keys = [
+        k for k in frames
+        if _analysis(key_case.get(k, {})).get('n_qubits') is not None
+    ]
+    embed_res = bool(circ_keys) and not args.no_resources
+    if embed_res:
+        fig = plt.figure(figsize=(16, 7))
+        gs = fig.add_gridspec(1, 2, width_ratios=[1.15, 1], wspace=0.2)
+        lg = gs[0].subgridspec(2, 1, height_ratios=[3, 1], hspace=0.08)
+        ax_u = fig.add_subplot(lg[0])
+        ax_err = fig.add_subplot(lg[1])
+        rg = gs[1].subgridspec(2, 2, hspace=0.5, wspace=0.33)
+        res_axes = [fig.add_subplot(rg[i // 2, i % 2]) for i in range(4)]
+    else:
+        fig, (ax_u, ax_err) = plt.subplots(
+            2, 1, figsize=(10, 6.5),
+            gridspec_kw={"height_ratios": [3, 1]},
+        )
+        res_axes = []
     ic_name = anchor_meta.get('ic', '?')
     fig.suptitle(
         f"Method Comparison: q={q_val} (N={2**int(q_val)}), "
@@ -532,7 +783,34 @@ def main() -> None:
     ax_err.legend(loc='upper left', fontsize=8)
     ax_err.grid(alpha=0.2)
 
-    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    # Animated cumulative-resource curves (depth / CX / circuits / runtime),
+    # growing per measure-reprepare segment.  Width is constant -> annotate.
+    res_artists: dict = {}
+    if res_axes:
+        series = [{'key': k, 'case': key_case[k]} for k in circ_keys]
+        res_artists = setup_resource_curves(
+            res_axes, series, key_style, dt, times[-1], animated=True,
+        )
+        widths = {
+            key_style[k]['label']: _analysis(key_case[k]).get('n_qubits')
+            for k in circ_keys
+        }
+        res_axes[0].text(
+            0.02, 0.86,
+            "width: " + ", ".join(
+                f"{lbl.split('[')[0].strip()} {n}q"
+                for lbl, n in widths.items() if n is not None
+            ),
+            transform=res_axes[0].transAxes, fontsize=6, va='top',
+            color='0.3',
+        )
+
+    if embed_res:
+        # add_gridspec subfigures are not tight_layout-compatible; the grid
+        # already carries its own spacing, so just reserve room for suptitle.
+        fig.subplots_adjust(top=0.92, bottom=0.08, left=0.05, right=0.985)
+    else:
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
 
     du0dx = np.gradient(u0, x[1] - x[0])
     max_grad = np.max(np.abs(du0dx))
@@ -554,8 +832,12 @@ def main() -> None:
             f"step {step}/{n_steps_total}  "
             f"t={t:.4f} ({t_pct:.0f}% T_shock)"
         )
+        for (_, _), (ln, t_arr, cum) in res_artists.items():
+            mask = t_arr <= t + 1e-9
+            ln.set_data(t_arr[mask], cum[mask])
         return (ref_line,) + tuple(lines.values()) + \
-            tuple(err_lines.values()) + (time_text,)
+            tuple(err_lines.values()) + \
+            tuple(a[0] for a in res_artists.values()) + (time_text,)
 
     anim = manimation.FuncAnimation(
         fig, update, frames=len(step_keys_common),
@@ -568,6 +850,12 @@ def main() -> None:
         f"Saved animation to {outfile}  "
         f"({len(step_keys_common)} frames @ {args.fps} fps)",
     )
+
+    if not args.no_resources:
+        res_path = Path(outfile).with_name(
+            Path(outfile).stem + '_resources.png',
+        )
+        plot_resource_panel(candidates, res_path)
 
 
 if __name__ == '__main__':

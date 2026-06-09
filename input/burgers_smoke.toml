@@ -1,38 +1,41 @@
-# MPS vs. QLBM 
-# Gaussian-IC method-comparison sweep
+# Smoke: fast cartoon 
 
 [global]
 _output_dir = "~/q8020"
 _inject_outdir = "--outdir"
 _env = "./.venv"
 _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
-"--noshow" = true
-"--no-classical-reference" = true   # GIF recomputes its own Godunov reference
-"--q" = 3
-"--nu" = 1e-2                 # viscosity
-"--cfl" = 0.1                 # time step control, smaller --> more steps
-"--shock-pct" = 150.0         # % of shock formation
-"--bc" = "dirichlet"          
-"--ic" = "gaussian"
-"--ic-amplitude" = 0.4        # within D1Q3 stability window
-"--ic-center" = 0.5
-"--ic-sigma" = 0.1
+"--noshow" = true               
+"--q" = 4                       
+"--nu" = 0.1                    
+"--cfl" = 0.1                  
+"--n-steps" = 30     # -->3 QLBM steps = 1 IC + 3 = 4 frames of a post-proc movie
+"--bc" = "periodic"
+"--ic" = "sine"
+"--ic-amplitude" = 0.3          
 "--source" = "none"
-"--shots" = 150000
-"--auto-cadence" = true       # compute CH segment-size & movie save-every
-# Smoke test: keep it fast.  Bounded metric transpile so a pathological
-# decomposition can't stall the sanity check (q=3 transpiles in ~1-2s anyway).
-"--metric-transpile-timeout" = 30
+"--shots" = 2000
+"--seed" = 1234
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+"--save-every" = 5
+"--segment-size" = 5 
+"--metric-transpile-timeout" = 10
+"--ref-points" = 200         
+"--evolution-mode" = "measure_reprepare"
 
-
-[qlbm_circuit]
-"--method" = "qlbm_circuit"
-"--sign-recovery" = "none"    # gaussian doesn't expose the sign problem
 
 [cole_hopf_circuit]
 "--method" = "cole_hopf_circuit"
-"--propagator" = "dense-block"       
-"--evolution-mode" = "measure_reprepare"
+"--propagator" = "qft-diagonal"      # shallowest, fast at small q
+"--bond-dim" = 4
 
-# Postproc: 2-panel animated GIF (u(x,t) + L2 error vs Godunov)
-_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --ref godunov --no-ic"]
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 2
+"--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --no-ic"]

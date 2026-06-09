@@ -69,6 +69,7 @@ class BurgersConfig(SolverConfig):
     evolution_mode: str = "single"
     segment_size: int = 10
     fock_qubits: int = 3
+    qalb_collision_trotter_reps: int = 0
     metric_transpile_timeout: float = 60.0
     phi_modes: int = 0
     taylor_order: int = 4
@@ -397,6 +398,8 @@ class QALBIntegrator(_DelegatingIntegrator):
             backend=self.backend,
             qc=getattr(config, "fock_qubits", 3),
             seed=config.seed,
+            trotter_reps=getattr(config, "qalb_collision_trotter_reps", 0),
+            trotter_order=config.trotter_order,
         )
 
 

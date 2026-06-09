@@ -6,6 +6,12 @@ folded in below. Each entry lists why it matters, rough scope, and what
 it depends on. Listed roughly in order of likely priority; all items are
 independent unless a dependency is noted.
 
+> **Completed / resolved items** (#12, #14, #16, #24, #25, #26, #28, #29)
+> are split out to
+> [../archive/FUTURE-WORK-DONE.md](../archive/FUTURE-WORK-DONE.md).
+> Numbers are **preserved** (referenced elsewhere), so this list has
+> gaps rather than renumbering. #27 stays here — only partially shipped.
+
 ## 1. Burgulence — statistical study of decaying 1-D Burgers turbulence
 
 **Why.** Burgulence is the canonical toy model for 1-D shock-dominated
@@ -192,19 +198,6 @@ compatibility), update tests.
 **Depends on.** Nothing. Do this whenever we next touch Qiskit
 pinning.
 
-## 12. Cole-Hopf-exact analytic IC (plan F12.1) — DONE
-
-Shipped.  See OVERVIEW §4.4 and `burgers_cole_hopf.py:
-{initial_condition_cole_hopf_exact, analytic_solution_cole_hopf,
-validate_cole_hopf_coeffs}`.  Wired via `--ic cole_hopf_exact` with
-coefficients via `--ic-cole-hopf-coeffs "a0,a1,..."`.  When `--method`
-is `cole_hopf` or `cole_hopf_circuit`, IC defaults to
-`cole_hopf_exact` and the analytic `u(x,t)` is used as the reference
-trajectory automatically; `--no-analytic-reference` falls back to
-FTCS/Godunov.  Restricted to `--bc dirichlet` + `--source none` by the
-math (Neumann-on-φ cosine basis; modes only stay decoupled in the
-unforced case).
-
 ## 13. UCAN cross-validation (plan §3.2)
 
 **Why.** Independent oracle check on our `shift` classical baseline
@@ -222,21 +215,6 @@ point per step (`< 1e-12`).
 **Depends on.** Access to the UCAN-1DBurgers repo (not currently
 checked out on this workspace).
 
-## 14. `qlbm_circuit` real-backend shots path (QLBM F11-13) — DONE
-
-Shipped as "Option A" (hybrid by construction; mirror of Meena
-Appendix A.A for QLBM).  `run_qlbm_circuit_simulation` shots branch
-now builds the same per-step circuit the statevector path builds,
-transpiles, executes on the configured backend, and reconstructs
-`f_post` via `|ψ_out_k| ≈ √(counts[k]/S)` followed by
-`unflatten_distributions`.  `--sign-recovery {none, classical_oracle}`
-both honored; `hadamard_test` since shipped under #26.  Per-step metrics gain
-`leakage` (mass in the unused `|11⟩` velocity block — noise sensor)
-and `negative_mass` (classical-oracle signal for when sign recovery
-matters).  See SPEC-qlbm-shots-and-sign-recovery.md and OVERVIEW
-§5.2 for the full contract and the hybrid-vs-pure-quantum framing.
-The pure-quantum QLBM alternatives are #27 / #28 / #29.
-
 ## 15. Neumann BC on `u` (plan F12.3)
 
 **Why.** Current user-facing `--bc` choices are `{periodic,
@@ -253,17 +231,6 @@ setup, `--bc` choices). Out of scope for `cole_hopf_circuit` since
 Neumann-on-u is not a natural Cole-Hopf case.
 
 **Depends on.** Nothing.
-
-## 16. Gaussian IC (plan F12.2) — DONE
-
-Shipped.  `initial_condition_gaussian` in `burgers_classical.py`,
-`--ic gaussian` with `--ic-center` (default 0.5) and `--ic-sigma`
-(default 0.1); amplitude via the existing `--ic-amplitude`.  No
-closed-form Cole–Hopf analytic reference (the `∫u₀` is an erf, so
-`φ₀` has no clean heat-equation evolution); pairs with FTCS/Godunov
-as the classical reference.  Works with all methods including
-`cole_hopf_circuit` and `qlbm*`; for LBM keep `--ic-amplitude < 1.0`
-for D1Q3 stability.  See OVERVIEW §1.1.
 
 ## 17. RK4 time integration (plan F6)
 
@@ -398,120 +365,94 @@ Item 7 (hardware + mitigation) for real-device runs.  Acceptance
 target: reproduce the sine-IC trajectory at `q = 4–5`, `ν = 1e-3`
 within ~5% L²-error against the classical reference, on Aer.
 
-## 24. Plumb new IC / reference flags into `BurgersConfig` — DONE
+## 27. Itani-style pure-quantum QLBM (QALB) — PARTIALLY SHIPPED
 
-Shipped.  `BurgersConfig` in `burgers_fw.py` now has fields
-`ic_center`, `ic_sigma`, `ic_cole_hopf_coeffs`, `classical_reference`,
-`analytic_reference`; `burgers_solver.py` passes them in from
-`args`; `burgers_postprocess.py` records them in both the case
-fragment and the JSON summary, conditional on the relevant `--ic` for
-the IC-specific fields (so case fragments stay clean for unrelated
-ICs).  See OVERVIEW §8.1.
+The **collision + shots path is shipped** as the bare `qlbm_circuit`
+(`burgers_qalb_circuit.py`, `QALBIntegrator`, `run_qalb_simulation`;
+see OVERVIEW §5.3). What's done vs. what remains:
 
-## 25. Classical `cole_hopf` + `--bc dirichlet` BC mapping — DONE
+**Done.**
+- App B value/Fock encoding (vacuum-displacement, `⟨q̂⟩` readout,
+  machine-precision encode/decode).
+- Normal-ordered Hermitised collision `e^{−iΔtĤ′}` (Itani Eq. 79–86) —
+  exactly unitary, **no post-selection**; the normal-ordering of the
+  quadratic term (`s²−I`) was the key that made the truncated collision
+  reproduce the classical flow, convergent in `qc`.
+- Per-site collision + exact streaming, measure-reprepare(k=1),
+  `--fock-qubits`, `--seed`; routed through the shared shots helpers.
+- Validation gates 1–7 in the module `__main__`; shots-vs-statevector
+  agreement; subsumes #28 (the QALB *is* a Carleman/Kowalski scheme).
+- **27.1 Trotter synthesis of `Ĥ′` (gate to hardware).** The dense
+  per-site `UnitaryGate` of `e^{−iΔt Ĥ′}` (Quantum-Shannon, ~4^(3qc) CX)
+  is now replaceable by a Suzuki-Trotter circuit of the Pauli
+  decomposition of `Ĥ′` (`cell_collision_gate(..., trotter_reps>0)`,
+  `--qalb-collision-trotter-reps`, gate7). A **single position-free
+  unitary on exactly 3·qc qubits, no ancilla, exactly unitary (no
+  post-selection)** — strictly better than an LCU block-encoding for
+  this path, which would reintroduce ancilla + post-selection and break
+  the App B virtue. Order-2 Trotter error ∝ 1/reps²; reps≈4 sits below
+  the qc=2 Fock-truncation floor (gate7). **Measured depth (basis u/cx,
+  opt-1):** at qc=3 the dense `UnitaryGate` is depth≈236k / 119k CX,
+  while Trotter o=2 reps=1 is depth≈66k / 54k CX (**3.6× shallower**) and
+  reps=2 is ≈132k / 109k CX (1.8× shallower) — the exponential
+  Quantum-Shannon blowup is exactly what this fixes. At qc=2 (only 6
+  qubits) the dense unitary is already cheap (depth 3522 / 1782 CX) so
+  Trotter does *not* win there. *Caveat:* the Pauli words come from a
+  brute-force `SparsePauliOp.from_operator` (194 terms at qc=2, 2948 at
+  qc=3); the structured Itani monomial decomposition (Eqs. 132–133,
+  `m=17` monomials × `qc²` words ≈ 68 at qc=2) would shrink the term
+  count by ~30× and is the follow-on for the full depth advantage —
+  tracked as **27.1a** below.
 
-Discovered during the #24 smoke test: `run_cole_hopf_simulation` was
-periodic/Neumann-only on the phi side, so `--method cole_hopf --bc
-dirichlet` crashed with a cryptic `ValueError: Unknown bc: 'dirichlet'`
-from `build_laplacian_dense`.  This broke BC symmetry between the
-classical and circuit CH paths and made the classical CH unusable as
-a V&V oracle for `cole_hopf_circuit` under Dirichlet-on-u.
+**Open (tracked in the session task list as "task #3").**
+1. **27.1a — structured (compact) Pauli `Ĥ′`.** Replace `from_operator`
+   with the Itani monomial decomposition (Eqs. 132–133) so the LCU/Trotter
+   has `L = m·qc² ≈ 68` terms at qc=2 instead of 194; this is where the
+   real hardware-honest depth advantage lives at qc≥3.
+2. **#27.2 — coherent `k > 1` measure-reprepare + quantum streaming** —
+   needs a full-lattice circuit (position register + quantum log-depth
+   streaming, SPEC §3.6) so `k` collide+stream steps run before one
+   measurement; bounded by Itani App A's logistic truncation divergence
+   (keep `k` small at `Δt/τ = O(1)`). Today's k=1 measures every step +
+   classical streaming. `build_streaming_circuit` (the `q+2`
+   interleaved/linear encoding in `burgers_qlbm_circuit.py`) does **not**
+   carry over; `build_qalb_streaming_unitary` is its QALB replacement.
 
-Shipped.  `run_cole_hopf_simulation` now mirrors the same `phi_bc =
-"neumann" if bc == "dirichlet" else bc` mapping that
-`burgers_cole_hopf_circuit.py:1911` uses on the circuit side
-(per OVERVIEW §4.1: Dirichlet on u ↔ Neumann on phi).  Unsupported BC
-values raise a clean `NotImplementedError` instead of leaking the
-phi-side label up to the user.  Classical `cole_hopf` + `--bc
-dirichlet` now runs and can serve as a cross-check against
-`cole_hopf_circuit` at the same BC.
+   **Collision ↔ streaming interface contract (frozen — #27.1 landed
+   against exactly this; the transducer + streaming compose against it):**
+   - The per-site collision is `cell_collision_gate(tau, qc,
+     collision_time, trotter_reps, trotter_order)` — a Qiskit gate on
+     **exactly `3·qc` qubits, NO ancilla, exactly unitary (no
+     post-selection)**. It is *not* an LCU block-encoding (an LCU would
+     reintroduce an ancilla + post-selection and break the App B virtue),
+     so there is **nothing to uncompute** on the collision and the
+     transducer must not assume an LCU ancilla.
+   - **Register order is frozen** as `kron(reg₋₁, reg₀, reg₊₁)` (the
+     `encode_cell_B` convention). In Qiskit qubit indexing that is
+     **reg₋₁ = qubits `[2·qc, 3·qc)` (MSB), reg₀ = `[qc, 2·qc)`,
+     reg₊₁ = `[0, qc)` (LSB)**. Build the transducer + streaming against
+     exactly these slots.
+   - The collision is **position-free** (per-site), so it composes
+     cleanly with whatever goes on the position register — there is no
+     coupling between the collision gate and `build_qalb_streaming_unitary`.
+3. **Backend wiring** — `make_integrator` builds no backend for
+   `qlbm_circuit` and hardcodes `backend_type="sim"` elsewhere, so
+   `--backend-type hardware` is ignored; wire `QALBIntegrator` to honor
+   it (small).
+4. **Validation** — full shots run at the aligned regime (`τ > 1`),
+   qc-convergence vs FTCS, and the incompressible Mach ceiling at
+   `amp ∈ {0.5, 0.8}`; plus error mitigation + an estimator-variance /
+   shot-budget study.
 
-## 26. Hadamard per-bin sign test for `qlbm_circuit` (fast follow to #14) — DONE
+**Note on the FTCS gap.** QALB is a *flow*-LBM (continuous BGK flow),
+so it differs from FTCS/Euler by an O(Ω²)/step **scheme** gap
+(~0.11 final error) that does *not* shrink with `qc` — distinct from
+the Fock-truncation error, which does. See OVERVIEW §5.3 and
+[SPEC](../future/SPEC-qlbm-pure-quantum-qalb.md).
 
-Shipped.  `--sign-recovery hadamard_test` is now a stand-alone
-(non-hybrid) sign-recovery mode for `qlbm_circuit`.  New helper
-`_qlbm_hadamard_signs` in `burgers_qlbm_circuit.py` runs a per-bin
-Hadamard test (one ancilla, controlled `X_k · U_step · prep(ψ_in)`)
-that estimates `Re(⟨k|U_step|ψ_in⟩)` for each of the `4N` basis
-indices.  Every QLBM operator (collision Householder + real streaming
-permutation) is real, so that real part *is* `ψ_out_k`; its sign is
-the recovered sign and is combined with the direct magnitude
-`√(counts[k]/S)`.  Unlike `classical_oracle` the signs come from the
-circuit itself, keeping the run a stand-alone benchmark.  Cost is
-`O(4N)` extra circuit executions per step; per-step metric
-`hadamard_p_kept` reports the mean post-selection acceptance.  Mirrors
-`burgers_cole_hopf_circuit.hadamard_per_bin_circuit`.  Verified at
-`q=3` against the statevector path (exact agreement at 2e5 shots).
-See OVERVIEW §5.2.
+**Depends on.** Item 2 (locality-preserving encoding) helps at `q ≥ 7`;
+item 7 (hardware + mitigation) for real-device runs.
 
-## 27. Itani-style pure-quantum QLBM (QALB)
-
-**Why.** Today's `qlbm_circuit` ("Option A") is hybrid by
-construction: every step builds the collision unitary from a
-classically-computed `f_post = collide_bgk(f_pre, tau)` via Householder
-dilation.  The quantum circuit then *replays* the classical answer.
-This is the QLBM analog of Meena Appendix A.A's hybrid design for
-`quantum_circuit`.  Itani et al., *Phys. Fluids* 36, 2024 (ref [11]
-of the Meena paper) propose a pure-quantum QALB where both `f` and
-the equilibrium `f_eq` live on the quantum register in superposition
-and the collision is a *state-independent* operator on the combined
-encoding.  The result is a genuine pure-quantum QLBM, parallel to
-the `cole_hopf_circuit` pathway.
-
-**Scope.** Substantial — a new algorithm, not a modification of
-`burgers_qlbm_circuit.py`.  Components: (a) extended register layout
-that block-encodes `f_eq(ρ, u)` alongside `f` (extra ancilla
-qubits); (b) state-independent collision unitary; (c) streaming
-unchanged from today; (d) macroscopic-moment readout via overlap
-circuits or amplitude estimation rather than direct measurement;
-(e) cross-validation against the existing Option A as the hybrid
-oracle.  Likely a new method name (`--method qalb`) coexisting with
-the existing `qlbm_circuit` Option A, similar to how `quantum_exact`
-coexists with `quantum_circuit`.
-
-**Depends on.** Nothing technical, but item 2 (locality-preserving
-encoding) helps the equilibrium-encoding subcircuit at `q ≥ 7`.
-Item 7 (hardware + mitigation) for real-device runs.
-
-## 28. Carleman linearization of BGK collision
-
-**Why.** Alternative pure-quantum QLBM route to #27.  Carleman lift
-`(f, f⊗f, f⊗f⊗f, …)` truncated at order `M` turns BGK's quadratic
-nonlinearity into a *linear* sparse block-bidiagonal generator on
-the lifted state.  Then evolution is a single fixed unitary —
-state-independent, no per-step classical mirror.  Parallels item 3
-(Carleman for direct-`u` Burgers); the BGK case is structurally
-similar but operates on the lattice distributions rather than `u`
-directly.
-
-**Scope.** Substantial.  Lifted dimension `O(n^M)` for `n = 2^{q+2}`;
-the order-`M` register needs `M·(q+2)` qubits.  Truncation-error
-analysis, block-encoding of the lifted generator, integration as
-a third QLBM method (`--method qlbm_carleman` or similar).
-Convergence requires `R = ‖nonlinearity‖/‖dissipation‖ < 1`, i.e.
-low effective Reynolds / `τ` not too close to 0.5.  State the
-regime restriction explicitly.
-
-**Depends on.** Item 2 (encoding) for locality of the lifted
-operators at large `q`/`M`.
-
-## 29. Linearized BGK collision (low-Mach pure-quantum QLBM)
-
-**Why.** The cheapest pure-quantum route.  Linearise BGK around the
-equilibrium: `f = f_eq + δf`, treat `δf` as the variable, drop the
-`O(δf²)` term.  Resulting collision operator is *linear* in `δf`,
-fixed, state-independent.  Streaming unchanged.  Pure-quantum, no
-classical mirror.
-
-**Scope.** Small to moderate.  New module
-`burgers_qlbm_linear_circuit.py` with a fixed collision unitary
-build, identical streaming.  Validation: agreement with full BGK in
-the small-Mach, near-equilibrium regime.  Add as a third QLBM
-method choice (`--method qlbm_linear` or similar).
-
-**Depends on.** Nothing.
-
-**Catch.** Only valid for smooth, low-Mach flows near equilibrium.
-Loses shock physics — exactly what Burgers is most interesting for.
-Useful as a pedagogical pure-quantum LBM benchmark, not as the
-production solver.  Document the regime restriction prominently.
+> #28 (Carleman lift of BGK) and #29 (linearised-BGK,
+> `qlbm_circuit_linear`) are resolved — see
+> [../archive/FUTURE-WORK-DONE.md](../archive/FUTURE-WORK-DONE.md).
