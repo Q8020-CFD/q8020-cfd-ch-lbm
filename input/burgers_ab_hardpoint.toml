@@ -53,6 +53,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--bond-dim" = 4
 "--segment-size" = 5
 "--save-every" = 5
+"--phi-modes" = 6 # 16?
 
 [qlbm_circuit]
 "--method" = "qlbm_circuit"

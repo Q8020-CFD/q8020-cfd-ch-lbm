@@ -278,7 +278,16 @@ def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
             )
             artists[(mi, s['key'])] = (ln, t, cum)
         ax.set_title(title, fontsize=9)
-        ax.set_ylim(0, ymax * 1.15 if ymax > 0 else 1.0)
+        ax.set_yscale('log')
+        if ymax > 0:
+            ymin_pos = min(
+                (float(cum[cum > 0].min()) if np.any(cum > 0) else ymax)
+                for _, (_, _, cum) in
+                ((k, artists[k]) for k in artists if k[0] == mi)
+            ) if any(k[0] == mi for k in artists) else ymax
+            ax.set_ylim(ymin_pos * 0.5, ymax * 3.0)
+        else:
+            ax.set_ylim(0.1, 1.0)
         ax.set_xlabel("simulation time", fontsize=8)
         ax.tick_params(labelsize=8)
         ax.grid(alpha=0.2)

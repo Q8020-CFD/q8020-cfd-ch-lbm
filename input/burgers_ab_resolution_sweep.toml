@@ -59,6 +59,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--bond-dim" = 4
 # segment-size / save-every intentionally omitted -> set by --auto-cadence
 "--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+"--phi-modes" = 6
 
 [qlbm_circuit]
 "--method" = "qlbm_circuit"

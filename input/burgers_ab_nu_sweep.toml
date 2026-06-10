@@ -66,12 +66,14 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--segment-size" = 5
 "--save-every" = 5
 "--nu" = [0.05, 0.03, 0.015, 0.008, 0.003]
+"--phi-modes" = 6
 
 [qlbm_circuit]
 "--method" = "qlbm_circuit"
 "--fock-qubits" = 3                   # qc=2 too coarse; qc=3 convergent
 "--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
 "--nu" = [0.05, 0.03, 0.015, 0.008, 0.003]
+"--phi-modes" = 6 # 16?
 
 # classical D1Q3 LBM: shares QLBM's *scheme*, so QLBM-vs-lbm isolates the
 # quantum/Fock error and lbm-vs-FTCS isolates the scheme gap (SPEC 5).

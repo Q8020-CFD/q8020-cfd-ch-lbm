@@ -20,7 +20,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--no-analytic-reference" = true
 "--save-every" = 5
 "--segment-size" = 5 
-"--metric-transpile-timeout" = 10
+"--metric-transpile-timeout" = 0
 "--ref-points" = 200         
 "--evolution-mode" = "measure_reprepare"
 

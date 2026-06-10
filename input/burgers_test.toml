@@ -67,8 +67,9 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 # segment-size - divides QLBM's 10-step cadence so CH/FTCS snapshot at every QLBM 
 # lattice time.  Also the measure_reprepare segment length (re-prep every 5 steps).
 # Note QLBM k=1, i.e. steps are exact, whereas CH varies
-"--segment-size" = 5
-"--save-every" = 5
+"--segment-size" = 10
+"--save-every" = 10
+"--phi-modes" = 6
 
 # ***********************************************************************************
 
@@ -76,7 +77,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--method" = "qlbm_circuit"
 "--fock-qubits" = 3             # Fock qubits/density; qc=2 too coarse,3,4,...
                                 # qc=3 -> dense 9-qubit collision/site
-"--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
+"--qalb-collision-trotter-reps" = 0  # vs 2, #27.1 Trotter synth (0=dense); err~1/reps^2
 
 # ***********************************************************************************
 [ftcs_ref]
