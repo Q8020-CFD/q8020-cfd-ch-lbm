@@ -84,6 +84,10 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--method" = "ftcs_reference"        # owns the FTCS reference for the sweep
 # use at least this many grid points on the classical reference; actual computed from q
 "--ref-points" = 200                 # sweep: [200, 400, 800]
+# snapshot at the same 10-step cadence as the anchor; without this FTCS
+# defaults to save-every=0 -> only steps [0, n_steps] stored, so the
+# reference curve resamples stale (frozen IC then final) at every frame.
+"--save-every" = 10
 
 # ***********************************************************************************
 # postproc

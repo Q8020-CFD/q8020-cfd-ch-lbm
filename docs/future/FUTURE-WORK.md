@@ -456,3 +456,76 @@ item 7 (hardware + mitigation) for real-device runs.
 > #28 (Carleman lift of BGK) and #29 (linearised-BGK,
 > `qlbm_circuit_linear`) are resolved — see
 > [../archive/FUTURE-WORK-DONE.md](../archive/FUTURE-WORK-DONE.md).
+
+## 30. Adaptive per-segment shot budgeting (`cole_hopf_circuit`)
+
+**Why.** Shots are currently a hand-set constant (`--shots`, e.g.
+150000 flat across the whole measure-reprepare run), so every segment
+pays the same sampling cost regardless of how hard it is to resolve.
+That is wasteful at both ends: the heat propagator damps high modes
+fastest, so early segments lose the most amplitude (lowest
+`p_success`, hardest to resolve) while late segments approach
+`p_success → 1` and are over-sampled. A shot count *derived* from the
+target accuracy would replace the magic number with a computed budget
+and cut total shots at fixed final error.
+
+The statistical floor is analytic and, crucially, **does not need a
+statevector reference** — it is self-reported by the counts. From
+`reconstruct_phi_from_counts` the per-bin amplitude estimate is
+`φ̂_k = φ_norm·√(c_k/S)`, and the delta method gives a flat per-bin
+variance `Var(φ̂_k) ≈ φ_norm²/(4S)` (independent of `p_success`). With
+`M = --phi-modes` kept after the Fourier low-pass (white shot noise →
+fraction `M/N` of the variance retained), the relative φ error is
+
+   ε_φ ≈ √M / (2·√S·√p_success)   ⇒   S ≈ M / (4·p_success·ε_φ²).
+
+Mapping φ-error to the physical `u`-error through the inverse
+transform `u = −2ν ∂ₓ ln φ` multiplies by a condition number
+κ ~ exp((U_max−U_min)/2ν) (the same `exp(·/2ν)` blow-up behind item 10
+and the *"CH broken below ν≈0.015"* TOML note), giving
+S ≈ M·κ² / (4·p_success·ε_u²). κ comes from the **macroscopic**
+velocity range (IC-known / coarsely measurable), `M` is a user input,
+and `p_success` is a scalar acceptance rate measurable to a few % with
+a few-hundred-accepted-count pilot **at the real q** — none of these
+require holding the 2^q state classically, so the scheme is
+poly-cost and survives to large q (unlike calibrating off a `shots=0`
+run, which presupposes the very SV solve the algorithm exists to
+avoid).
+
+**Scope.** Moderate; lives in `_run_shots_measure_reprepare`
+(`burgers_cole_hopf_circuit.py`). Two viable forms:
+
+- **Online/adaptive (preferred — no separate pilot pass).** Run each
+  segment once; after `post_select_counts`, read the *actual*
+  `p_success` and the self-reported binomial spread
+  (`φ_norm²/(4·n_kept)`), then either keep sampling that segment until
+  the spread meets ε (Aer lets you run more shots and merge counts) or
+  set the *next* segment's shot count from this one's `p_success`.
+  Removes the magic number entirely; the total budget is discovered as
+  the run proceeds rather than fixed up front.
+- **Naive pilot.** A low-shots (~1–2k) full trajectory is `K` circuits
+  (one per segment — the re-prep chain means segment *i*'s
+  `p_success` depends on all prior outcomes, so segments can't be
+  probed in isolation), then extrapolate `S_target = S₀·(ε₀/ε_target)²`
+  per segment. Cheap (~1–2% of a production pass) because
+  construction/transpile cost is shots-independent and execution
+  dominates — but the online form makes it unnecessary.
+
+  Note that under segmentation errors add roughly in quadrature across
+  re-preps (ε_total ≈ √K·ε_seg ⇒ shots-per-segment ∝ K), partly offset
+  because shorter segments have much higher per-segment `p_success`
+  (≈ p_success_single^(1/K)). This is the same `segment_size × nu`
+  tuning surface flagged for the low-ν regime.
+
+**Honest limit.** This budgets only the **statistical** floor. It says
+nothing about systematic error — bond-dim truncation, MPS-prep,
+Möbius angle pruning, the CH model itself — which does *not* shrink
+with `S` and which, at large q, there is no cheap classical reference
+to measure. The helper must print an explicit disclaimer that it bounds
+statistical error alone. Same statistical machinery applies to QALB's
+`⟨q̂⟩`-from-counts readout (`cell_collision_shots`); generalises the
+shot-budget study noted in item 27 (Open #4).
+
+**Depends on.** Nothing. Related to item 10 (peaked-φ readout — the
+low-ν regime where this budget explodes via κ²) and item 27 Open #4
+(QALB estimator-variance / shot-budget study).

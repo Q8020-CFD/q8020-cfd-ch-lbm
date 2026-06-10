@@ -389,6 +389,19 @@ class QALBIntegrator(_DelegatingIntegrator):
     def _run_all(self, state, grid, config, dt):
         from burgers_qalb_circuit import run_qalb_simulation
 
+        # QALB reads out <q-hat> directly (eigenvalues span +/-, so the
+        # estimate is inherently signed) -- there is no magnitude/sign split
+        # for a Hadamard test to recover.  Reject any non-none sign-recovery
+        # rather than silently ignoring it (the flag is meaningful only for
+        # the magnitude-readout methods, e.g. direct_lcu).
+        if getattr(config, "sign_recovery", "none") not in ("none", None):
+            raise ValueError(
+                f"--sign-recovery={config.sign_recovery!r} is not supported "
+                "for method 'qlbm_circuit' (QALB): its readout estimates "
+                "<q-hat>, which is already signed, so sign recovery is a "
+                "no-op.  Use --sign-recovery none (the default)."
+            )
+
         u0 = state.to_dense()
         source_fn = getattr(config, "_source_fn", None)
         return run_qalb_simulation(

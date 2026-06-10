@@ -43,8 +43,8 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--shots" = 150000
 "--metric-transpile-timeout" = 0
 
-"--q" = 6                             # TODO = 8  (today-runnable dry-run at q=6)
-"--n-steps" = 50                      # TODO = 200  (n_steps ~ N, so q=8 -> 200)
+"--q" = 6                             # TODO = 8,9  (today-runnable dry-run at q=6)
+"--n-steps" = 50                      # TODO = 200 (q=8) / 400 (q=9); n_steps ~ N
 
 # ---------------------------------------------------------------------
 [cole_hopf_circuit]
@@ -53,7 +53,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--bond-dim" = 4
 "--segment-size" = 5
 "--save-every" = 5
-"--phi-modes" = 6 # 16?
+"--phi-modes" = 6
 
 [qlbm_circuit]
 "--method" = "qlbm_circuit"
@@ -66,6 +66,9 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 [ftcs_ref]
 "--method" = "ftcs_reference"
 "--ref-points" = 400
+"--save-every" = 5                    # match CH cadence; without it FTCS stores
+                                      # only [0, n_steps] and the reference (the
+                                      # L2 baseline) resamples stale every frame
 
 # ---------------------------------------------------------------------
 _group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

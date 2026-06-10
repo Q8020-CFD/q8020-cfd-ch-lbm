@@ -1293,6 +1293,13 @@ def _run_shots_measure_reprepare(
         f"done in {total_elapsed:.1f}s",
         file=sys.stderr, flush=True,
     )
+    # Stamp the end-to-end wall clock on the last snapshot's metrics so the
+    # runtime panel can derive 'other classical' = wall - transpile - exec
+    # (MPS prep, encode/decode, post-selection, Python overhead).  Per-segment
+    # transpile/execute are already recorded; without this anchor the panel
+    # can only show those two and the classical remainder collapses to zero.
+    if snap_steps:
+        snapshots[snap_steps[-1]][1]["method_wall_time_s"] = total_elapsed
     return [snapshots[s] for s in snap_steps]
 
 

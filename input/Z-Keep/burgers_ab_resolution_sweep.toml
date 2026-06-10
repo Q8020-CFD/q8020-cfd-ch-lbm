@@ -33,7 +33,6 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 
 "--cfl" = 0.1
 "--evolution-mode" = "measure_reprepare"
-"--auto-cadence" = true               # derive segment-size/save-every from n_steps
 
 "--bc" = "periodic"
 "--ic" = "sine"
@@ -45,36 +44,56 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--shots" = 150000
 "--metric-transpile-timeout" = 0
 
-# equal physical window across q (50% of t_shock=1/2pi); n_steps auto-
-# derived per q, cadence auto-aligned
-"--shock-pct" = 50.0
+# EXPLICIT stepping per q (no --auto-cadence / --shock-pct): each q sets its
+# own --n-steps in the group below so the physical window is held ~constant
+# (50% of t_shock at A=0.3).  segment-size/save-every are fixed at 10 so the
+# QLBM 10-fine-step lattice cadence and the CH/FTCS snapshots stay aligned.
+#   q=6 -> n_steps=170 | q=8 -> 680 | q=9 -> 1360   (n_steps = round(N*2.66))
+"--segment-size" = 10
+"--save-every" = 10
 
 # Swept variable lives in each [group] (sweeper expands group lists only,
 # then merges [global]; sweep.py:466-470).  Here:  --q = [6, 8, 9]
+# with a matching --n-steps per q.
 
+# ---------------------------------------------------------------------
+# IMPORTANT on per-q stepping.  --n-steps must track q to hold the physical
+# window fixed (n_steps = round(N*2.66) for 50% of t_shock at A=0.3):
+#   q=6 -> 170   |   q=8 -> 680   |   q=9 -> 1360
+# The sweeper CARTESIAN-PRODUCTS list params (sweep.py:2064), so you CANNOT
+# express the q<->n_steps pairing as two parallel lists -- [6,8,9] x [170,
+# 680,1360] would wrongly make 9 cases.  Therefore this file is ONE
+# resolution at a time (scalar q + scalar n_steps below).  To run the full
+# scaling story, copy this file to _q8 / _q9 and change the scalar pair, then
+# run all three; or override per run with --set.  This copy is the q=6 case
+# (also the dry-run that proves alignment + plotting end-to-end).
 # ---------------------------------------------------------------------
 [cole_hopf_circuit]
 "--method" = "cole_hopf_circuit"
 "--propagator" = "qft-diagonal"
 "--bond-dim" = 4
-# segment-size / save-every intentionally omitted -> set by --auto-cadence
-"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+"--q" = 6                            # this file = q6; q8 -> 8, q9 -> 9
+"--n-steps" = 170                    # MUST change with q: q8 -> 680, q9 -> 1360
 "--phi-modes" = 6
 
 [qlbm_circuit]
 "--method" = "qlbm_circuit"
 "--fock-qubits" = 3
 "--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
-"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+"--q" = 6
+"--n-steps" = 170
 
 [lbm_classical]
 "--method" = "lbm"
-"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+"--q" = 6
+"--n-steps" = 170
 
 [ftcs_ref]
 "--method" = "ftcs_reference"
 "--ref-points" = 800                  # finer than q=9 (512) to stay a faithful ref
-"--q" = [6]                          # TODO = [6, 8, 9]  (dry-run at q=6 only)
+"--save-every" = 10                   # explicit; match segment cadence (no auto)
+"--q" = 6
+"--n-steps" = 170
 
 # ---------------------------------------------------------------------
 _group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

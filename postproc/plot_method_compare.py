@@ -88,6 +88,29 @@ def _case_flag(meta: dict, cli_flag: str) -> str | None:
     return None
 
 
+# Per-method knobs surfaced in the legend so the plot states the exact
+# settings each method ran at (the "best-vs-best" knobs of an A-B bakeoff).
+# Only flags relevant to a given method are shown.
+_KNOB_LABELS = {
+    'cole_hopf_circuit': [('--bond-dim', 'bd'), ('--phi-modes', 'phi'),
+                          ('--propagator', '')],
+    'qlbm_circuit': [('--fock-qubits', 'qc'),
+                     ('--qalb-collision-trotter-reps', 'reps')],
+}
+
+
+def _knob_suffix(method: str, case: dict) -> str:
+    """Compact ' [bd8 phi8 ...]' suffix of the method's defining knobs, read
+    from the harvested case params.  Empty when no knobs are recorded."""
+    parts = []
+    for flag, tag in _KNOB_LABELS.get(method, []):
+        v = _case_flag(case, flag)
+        if v is None:
+            continue
+        parts.append(f"{tag}{v}" if tag else str(v))
+    return f" [{' '.join(parts)}]" if parts else ""
+
+
 def _analysis(meta: dict) -> dict:
     """The harvested 'analysis' fragment carrying the resource metrics
     (n_qubits, avg_circuit_depth, n_circuits_executed, runtime ...)."""
@@ -197,14 +220,64 @@ def _sm_circuits(m: dict):
     return m.get('n_circuits', 0) or 0
 
 
-def _sm_runtime(m: dict):
+def _sm_transpile_time(m: dict):
+    """Per-segment transpilation wall time (s)."""
     tr = (m.get('transpile') or {}).get('wall_time', 0) or 0
+    return (m.get('transpilation_time_s') or tr) or 0.0
+
+
+def _sm_execute_time(m: dict):
+    """Per-segment quantum-execution wall time (s)."""
     ex = (m.get('execute') or {}).get('wall_time', 0) or 0
+    return (m.get('execution_time_s') or ex) or 0.0
+
+
+def _sm_runtime(m: dict):
     return (
-        (m.get('execution_time_s') or ex)
-        + (m.get('transpilation_time_s') or tr)
+        _sm_execute_time(m)
+        + _sm_transpile_time(m)
         + (m.get('circuit_construction_time_s') or 0)
     )
+
+
+# Runtime split into transpile / quantum-execution / other-classical, for the
+# stacked runtime bar.  "Other classical" is whatever the method's own
+# end-to-end wall clock attributes to neither transpile nor execution:
+# state prep, streaming, encode/decode, post-selection, Python overhead.  We
+# anchor on the recorded method wall time when present (QALB stamps
+# method_wall_time_s on its last segment) and fall back to the summed
+# components otherwise (CH segments carry construction time explicitly).
+_RUNTIME_PARTS = [
+    ('transpilation', '#9467bd', _sm_transpile_time),
+    ('quantum execution', '#2ca02c', _sm_execute_time),
+    ('other classical', '#bcbd22', None),   # remainder; computed per series
+]
+
+
+def _runtime_split_total(case: dict) -> dict[str, float]:
+    """Total (transpile, quantum-execution, other-classical) seconds for a
+    case, summed over its per-step/segment metrics."""
+    psm = _psm(case)
+    transpile = float(sum(_sm_transpile_time(m) for m in psm))
+    execute = float(sum(_sm_execute_time(m) for m in psm))
+    # Prefer the method's own end-to-end wall clock as the total; it captures
+    # classical work (streaming, encode/decode, prep) the per-component fields
+    # don't.  Fall back to the summed components when it's absent.
+    wall = next(
+        (m['method_wall_time_s'] for m in reversed(psm)
+         if m.get('method_wall_time_s')),
+        None,
+    )
+    summed = transpile + execute + float(
+        sum((m.get('circuit_construction_time_s') or 0) for m in psm)
+    )
+    total = float(wall) if wall else summed
+    other = max(total - transpile - execute, 0.0)
+    return {
+        'transpilation': transpile,
+        'quantum execution': execute,
+        'other classical': other,
+    }
 
 
 # Time-varying metrics, animated as cumulative curves: (title, increment fn).
@@ -246,6 +319,57 @@ def _series_native(case: dict, fn, dt: float):
     return t, cum
 
 
+# Runtime decomposed into stacked components (transpile / quantum-execution /
+# other-classical), drawn as cumulative bands so the GIF shows WHERE time goes
+# over the run -- the animated analogue of the resource-PNG stacked bar.
+RUNTIME_CUM_PARTS = [
+    ('transpilation', _sm_transpile_time),
+    ('quantum execution', _sm_execute_time),
+]
+
+
+def _series_runtime_components(case: dict, dt: float):
+    """Native (t, {component: cumulative}) for the runtime panel.  Transpile
+    and quantum-execution are summed per step from their own fields; 'other
+    classical' is whatever the method's end-to-end wall clock attributes to
+    neither (state prep, streaming, encode/decode, Python overhead).  The
+    wall total is only stamped on the last segment, so 'other classical' is
+    distributed across steps in proportion to per-step execution time (even
+    split when exec times are absent) so its cumulative band reaches the true
+    wall total at run end -- consistent with _runtime_split_total / the PNG."""
+    psm = [m for m in _psm(case) if m.get('step') is not None]
+    if not psm:
+        return np.array([]), {}
+    pairs_t = sorted((m.get('step'), m) for m in psm)
+    steps = [p[0] for p in pairs_t]
+    mets = [p[1] for p in pairs_t]
+    t = np.array([0.0] + [s * dt for s in steps])
+
+    tr = np.array([_sm_transpile_time(m) for m in mets])
+    ex = np.array([_sm_execute_time(m) for m in mets])
+    constr = np.array([(m.get('circuit_construction_time_s') or 0) for m in mets])
+    wall = next(
+        (m['method_wall_time_s'] for m in reversed(mets)
+         if m.get('method_wall_time_s')),
+        None,
+    )
+    summed_total = float(tr.sum() + ex.sum() + constr.sum())
+    total = float(wall) if wall else summed_total
+    other_total = max(total - float(tr.sum()) - float(ex.sum()), 0.0)
+    # Distribute 'other classical' across steps by exec-time share (so it
+    # tracks where the quantum work -- and thus surrounding classical work --
+    # actually happened); fall back to an even split.
+    weights = ex if ex.sum() > 0 else np.ones_like(ex)
+    other = other_total * weights / weights.sum()
+
+    comp = {
+        'transpilation': np.concatenate(([0.0], np.cumsum(tr))),
+        'quantum execution': np.concatenate(([0.0], np.cumsum(ex))),
+        'other classical': np.concatenate(([0.0], np.cumsum(other))),
+    }
+    return t, comp
+
+
 def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
     """Cumulative-resource artists, each drawn at its OWN segment cadence.
     Coarse series (few segments, e.g. QLBM) get a marked staircase; dense
@@ -256,11 +380,74 @@ def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
         for s in series
     }
     max_pts = max(seg_counts.values(), default=1)
+    # Runtime-decomposition panel: COLOR = method (matches every other panel,
+    # e.g. CH blue / QLBM red); the three time components are distinguished by
+    # LINESTYLE within that method colour.
+    runtime_ls = {
+        'transpilation': ':',
+        'quantum execution': '--',
+        'other classical': '-',
+    }
+    # The runtime metric ('sim runtime ...') is drawn decomposed into
+    # transpile / exec / classical bands rather than one cumulative line.
+    runtime_mi = next(
+        (i for i, (title, _) in enumerate(CUM_METRICS)
+         if 'runtime' in title.lower()),
+        None,
+    )
     first_t: list[float] = []
     artists = {}
     for mi, (title, fn) in enumerate(CUM_METRICS):
         ax = res_axes[mi]
         ymax = 0.0
+        if mi == runtime_mi:
+            # transpile / exec / classical routinely differ by 3-4 orders of
+            # magnitude (e.g. ~1s transpile vs ~1800s exec), so the panel uses
+            # a log y-axis spanning the SMALLEST nonzero band to the largest --
+            # the correct way to show same-unit quantities at wildly different
+            # scales without a second, ambiguous y-axis.  Method is encoded by
+            # COLOR (matching the other panels); component by LINESTYLE.
+            ymin_pos = float('inf')
+            for si, s in enumerate(series):
+                coarse = seg_counts[s['key']] < 0.6 * max_pts
+                t, comp = _series_runtime_components(s['case'], dt)
+                if not t.size:
+                    continue
+                first_t.append(float(t[0]))
+                mcolor = key_style[s['key']]['color']
+                for cname, cls in runtime_ls.items():
+                    cum = comp.get(cname)
+                    if cum is None:
+                        continue
+                    final = float(cum.max())
+                    ymax = max(ymax, final)
+                    if final > 0:
+                        ymin_pos = min(ymin_pos, final)
+                    ln, = ax.plot(
+                        [] if animated else t,
+                        [] if animated else cum,
+                        color=mcolor, ls=cls, lw=1.4,
+                        drawstyle='steps-post' if coarse else 'default',
+                        marker='o' if coarse else None, ms=2.5,
+                    )
+                    artists[(mi, f"{s['key']}::{cname}")] = (ln, t, cum)
+            # Linestyle -> component key lives in the TITLE (robust against the
+            # tight GIF layout clipping a below-axes legend); method -> colour
+            # is already legended in the other panels.
+            ax.set_title(
+                'sim runtime (s)\ntranspile (dot)  exec (dash)  classical (solid)',
+                fontsize=7,
+            )
+            ax.set_yscale('log')
+            if ymax > 0:
+                lo = ymin_pos * 0.3 if ymin_pos != float('inf') else ymax * 1e-4
+                ax.set_ylim(max(lo, 1e-5), ymax * 3.0)
+            else:
+                ax.set_ylim(0.1, 1.0)
+            ax.set_xlabel("sim time", fontsize=8)
+            ax.tick_params(labelsize=8)
+            ax.grid(alpha=0.2)
+            continue
         for s in series:
             t, cum = _series_native(s['case'], fn, dt)
             if t.size:
@@ -288,7 +475,7 @@ def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
             ax.set_ylim(ymin_pos * 0.5, ymax * 3.0)
         else:
             ax.set_ylim(0.1, 1.0)
-        ax.set_xlabel("simulation time", fontsize=8)
+        ax.set_xlabel("sim time", fontsize=8)
         ax.tick_params(labelsize=8)
         ax.grid(alpha=0.2)
     left = min(first_t) if first_t else 0.0   # start at the first segment
@@ -299,7 +486,82 @@ def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
     return artists
 
 
-def plot_resource_panel(candidates: list[dict], out_path: Path) -> None:
+def _stamp_id(fig, label: str) -> None:
+    """Small run/workflow-id watermark in the bottom-right corner."""
+    if not label:
+        return
+    fig.text(
+        0.995, 0.005, label,
+        ha='right', va='bottom', fontsize=6,
+        color='0.5', family='monospace',
+    )
+
+
+def _plot_runtime_stack(ax, methods, cats, by, xpos, bw, swept_flag):
+    """Stacked runtime bars on `ax`: each (method, sweep-value) bar is split
+    into transpile / quantum-execution / other-classical, so total height is
+    the method's sim runtime while the segments show where the time went.
+
+    Each bar is coloured by its METHOD (matching the per-method colours used
+    everywhere else, e.g. CH blue / QLBM red), and the three time components
+    are distinguished by increasing alpha within that colour (light=transpile,
+    medium=execution, solid=classical).  The component legend is placed
+    OUTSIDE the axes (to the right, in the hidden-subplot space) so it never
+    covers the bars; methods are already in the figure-level legend."""
+    from matplotlib.patches import Patch
+
+    # transpile -> exec -> classical, lightest -> solid within the method hue.
+    part_alpha = {
+        'transpilation': 0.4,
+        'quantum execution': 0.68,
+        'other classical': 1.0,
+    }
+    for mi, method in enumerate(methods):
+        xs = xpos + (mi - (len(methods) - 1) / 2) * bw
+        mcolor = METHOD_STYLE.get(method, {}).get('color', f'C{mi}')
+        for ci, c in enumerate(cats):
+            case = by.get((method, c))
+            if case is None:
+                continue
+            split = _runtime_split_total(case)
+            bottom = 0.0
+            for label, _, _ in _RUNTIME_PARTS:
+                h = split[label]
+                ax.bar(
+                    xs[ci], h, bw, bottom=bottom,
+                    color=mcolor, alpha=part_alpha[label],
+                    edgecolor='white', linewidth=0.4,
+                )
+                bottom += h
+            total = sum(split.values())
+            if total > 0:
+                ax.text(
+                    xs[ci], total, f"{total:.3g}",
+                    ha='center', va='bottom', fontsize=6,
+                )
+    ax.set_title('sim runtime (s) — transpile / exec / classical', fontsize=10)
+    ax.set_xticks(xpos)
+    ax.set_xticklabels([str(c) for c in cats], fontsize=8)
+    if swept_flag:
+        ax.set_xlabel(swept_flag.lstrip('-'), fontsize=8)
+    ax.grid(axis='y', ls=':', alpha=0.4)
+    # Neutral grey ramp explains the alpha encoding without re-stating colours;
+    # anchored outside the axes (right) so it sits over the hidden subplot.
+    comp_handles = [
+        Patch(facecolor='0.25', alpha=part_alpha[lbl], edgecolor='white',
+              label=lbl)
+        for lbl, _, _ in _RUNTIME_PARTS
+    ]
+    ax.legend(
+        handles=comp_handles, fontsize=6, title='time split',
+        title_fontsize=6, loc='upper left', bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0.0, frameon=False,
+    )
+
+
+def plot_resource_panel(
+    candidates: list[dict], out_path: Path, run_label: str = "",
+) -> None:
     """Standalone PNG: final accumulated resource totals as grouped bars."""
     circ = [
         e for e in candidates
@@ -324,7 +586,6 @@ def plot_resource_panel(candidates: list[dict], out_path: Path) -> None:
         ('# circuits (total)', _sm_circuits, True),
         ('cumulative depth', _sm_depth, False),
         ('cumulative CX', _sm_cx, False),
-        ('sim runtime (s)', _sm_runtime, False),
     ]
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
     axes = axes.ravel()
@@ -363,6 +624,11 @@ def plot_resource_panel(candidates: list[dict], out_path: Path) -> None:
         if swept_flag:
             ax.set_xlabel(swept_flag.lstrip('-'), fontsize=8)
         ax.grid(axis='y', ls=':', alpha=0.4)
+
+    # Runtime panel (axes[4]): one stacked bar per (method, sweep-value),
+    # split into transpile / quantum-execution / other-classical so the bar
+    # height stays the total sim runtime while the segments show composition.
+    _plot_runtime_stack(axes[4], methods, cats, by, xpos, bw, swept_flag)
     axes[-1].set_visible(False)
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
@@ -372,6 +638,7 @@ def plot_resource_panel(candidates: list[dict], out_path: Path) -> None:
         )
     sweep_txt = f" vs {swept_flag.lstrip('-')}" if swept_flag else ""
     fig.suptitle(f"Accumulated circuit resources{sweep_txt}", y=0.99)
+    _stamp_id(fig, run_label)
     fig.tight_layout(rect=(0, 0.05, 1, 0.96))
     fig.savefig(out_path, dpi=120, bbox_inches='tight')
     plt.close(fig)
@@ -383,7 +650,18 @@ def main() -> None:
     p.add_argument('postproc_json', nargs='?', default=None)
     p.add_argument('--sweep-dir', type=Path, default=None)
     p.add_argument('--outfile', default=None)
-    p.add_argument('--fps', type=int, default=8)
+    p.add_argument(
+        '--fps', type=int, default=3,
+        help="Animation frames per second.  Default 3 (~330ms/frame) is a "
+             "comfortable observable pace for studying the evolution "
+             "frame-by-frame; raise it for a faster loop.",
+    )
+    p.add_argument(
+        '--hold', type=float, default=2.0,
+        help="Seconds to hold on the final frame before the GIF loops "
+             "(implemented by repeating the last frame).  Default 2.0; "
+             "set 0 to disable.",
+    )
     p.add_argument(
         '--frames', type=int, default=0,
         help="Force an exact frame count, evenly spaced over [0, n_steps] "
@@ -436,10 +714,12 @@ def main() -> None:
         outfile = args.outfile or str(
             run_dir / 'method_compare.gif',
         )
+        run_label = run_dir.name
     elif args.sweep_dir:
         sd = args.sweep_dir.expanduser().resolve()
         all_cases = _load_cases(sd)
         outfile = args.outfile or 'method_compare.gif'
+        run_label = sd.name
     else:
         print(
             "Provide either a postproc JSON or --sweep-dir.",
@@ -724,6 +1004,7 @@ def main() -> None:
         f"$\\nu$={nu:.0e}, {bc}, {ic_name} IC",
         fontsize=12, fontweight="bold",
     )
+    _stamp_id(fig, run_label)
 
     ax_u.set_xlim(x[0], x[-1] + x[1] - x[0])
     ax_u.set_ylim(-ymax, ymax)
@@ -737,11 +1018,18 @@ def main() -> None:
         [], [], 'k-', lw=2.5, alpha=0.35, label=ref_label,
     )
 
-    # Series lines (one per disambiguated series key).
+    # Series lines (one per disambiguated series key).  Circuit methods
+    # report n_qubits in their analysis fragment (the solver expands -q into
+    # the full register width); surface it in the legend so the plot states
+    # the actual qubit cost of each method, not just the -q grid exponent.
     lines: dict[str, plt.Line2D] = {}
     for key in frames:
         sty = key_style[key]
         label = sty['label']
+        nq = _analysis(key_case.get(key, {})).get('n_qubits')
+        if nq is not None:
+            label += f" ({nq}q)"
+        label += _knob_suffix(key_method.get(key, ''), key_case.get(key, {}))
         if key in diverged:
             label += f" (diverged @ step {diverged[key]})"
         ln, = ax_u.plot(
@@ -826,6 +1114,8 @@ def main() -> None:
     t_shock = 1.0 / max_grad if max_grad > 0 else 1.0
 
     def update(frame_idx):
+        # Clamp so the padded hold frames (repeats of the last index) are safe.
+        frame_idx = min(frame_idx, len(step_keys_common) - 1)
         step = int(step_keys_common[frame_idx])
         t = step * dt
         t_pct = 100.0 * t / t_shock
@@ -848,8 +1138,12 @@ def main() -> None:
             tuple(err_lines.values()) + \
             tuple(a[0] for a in res_artists.values()) + (time_text,)
 
+    # Pad the sequence with repeats of the final frame so the GIF visibly
+    # holds on the end state before looping (each repeat = 1/fps seconds).
+    hold_frames = max(0, round(args.hold * args.fps))
+    total_frames = len(step_keys_common) + hold_frames
     anim = manimation.FuncAnimation(
-        fig, update, frames=len(step_keys_common),
+        fig, update, frames=total_frames,
         interval=1000 / args.fps, blit=False,
     )
     writer = manimation.PillowWriter(fps=args.fps)
@@ -857,14 +1151,15 @@ def main() -> None:
     plt.close(fig)
     print(
         f"Saved animation to {outfile}  "
-        f"({len(step_keys_common)} frames @ {args.fps} fps)",
+        f"({len(step_keys_common)} frames + {hold_frames} hold "
+        f"@ {args.fps} fps)",
     )
 
     if not args.no_resources:
         res_path = Path(outfile).with_name(
             Path(outfile).stem + '_resources.png',
         )
-        plot_resource_panel(candidates, res_path)
+        plot_resource_panel(candidates, res_path, run_label=run_label)
 
 
 if __name__ == '__main__':

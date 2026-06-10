@@ -382,13 +382,18 @@ def cell_collision_shots(
     df3: np.ndarray, tau: float, qc: int, collision_time: float,
     shots: int, backend: Any = None, seed: int | None = None,
     trotter_reps: int = 0, trotter_order: int = 2,
+    timing: dict | None = None,
 ) -> np.ndarray:
     """Per-site collision on SHOTS, no post-selection (the collision is
     unitary): prepare |δf>, apply the collision gate, rotate each density
     register into the q̂ eigenbasis, measure 3*qc qubits, and estimate
     δf_i'=<q̂_i> from the marginal counts.  RAM-safe (3*qc qubits).
     trotter_reps>0 selects the #27.1 Trotter synthesis of e^{-iT H'}
-    (hardware-honest depth) over the dense UnitaryGate."""
+    (hardware-honest depth) over the dense UnitaryGate.
+
+    If ``timing`` is given, the per-circuit transpile and execute wall times
+    are ADDED into timing['transpile'] / timing['execute'] (so a caller can
+    accumulate the split across all sites/steps)."""
     from qiskit import QuantumCircuit
     from qiskit.circuit.library import UnitaryGate
     from q8020_cfd_qutil.circuit import (
@@ -411,8 +416,13 @@ def cell_collision_shots(
     for i in range(3):
         circ.append(UnitaryGate(Vd, label="Vd"), range(i * qc, (i + 1) * qc))
     circ.measure(range(n), range(n))
-    circ_t, _ = transpile_circuit(circ, backend, seed_transpiler=seed)
-    counts, _ = execute_circuit_counts(circ_t, backend, shots=shots, seed=seed)
+    circ_t, tr_info = transpile_circuit(circ, backend, seed_transpiler=seed)
+    counts, ex_info = execute_circuit_counts(
+        circ_t, backend, shots=shots, seed=seed,
+    )
+    if timing is not None:
+        timing['transpile'] = timing.get('transpile', 0.0) + tr_info['wall_time']
+        timing['execute'] = timing.get('execute', 0.0) + ex_info['wall_time']
     exp = np.zeros(3)
     tot = 0
     for bitstr, cnt in counts.items():
@@ -556,6 +566,10 @@ def run_qalb_simulation(
     t0 = time.time()
     for step in range(1, n_steps_lbm + 1):
         t_step = time.time()
+        # Per-step transpile/execute accumulator (summed over all N sites);
+        # the remainder of the step wall time is classical (encode/decode,
+        # streaming, equilibrium, Python overhead).
+        step_timing: dict = {"transpile": 0.0, "execute": 0.0}
         df = f - F_EQ0[:, None]
         for site in range(N):
             if shots:
@@ -563,6 +577,7 @@ def run_qalb_simulation(
                     df[:, site], tau, qc, collision_time, shots,
                     backend=backend, seed=seed,
                     trotter_reps=trotter_reps, trotter_order=trotter_order,
+                    timing=step_timing,
                 )
             else:
                 df[:, site] = decode_cell(U @ encode_cell(df[:, site], polys), qc)
@@ -582,8 +597,16 @@ def run_qalb_simulation(
         }
         if shots:
             # One collision circuit per lattice site, executed this step.
+            # Split the step wall time into transpile / quantum-execution /
+            # classical-other so the runtime panel can stack them honestly.
+            step_wall = time.time() - t_step
             rec["n_circuits"] = N
-            rec["execution_time_s"] = time.time() - t_step
+            rec["transpilation_time_s"] = step_timing["transpile"]
+            rec["execution_time_s"] = step_timing["execute"]
+            rec["circuit_construction_time_s"] = max(
+                step_wall - step_timing["transpile"] - step_timing["execute"],
+                0.0,
+            )
             if cell_metric:
                 rec.update(cell_metric)
         metrics.append(rec)

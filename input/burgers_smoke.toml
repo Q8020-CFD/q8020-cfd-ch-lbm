@@ -29,11 +29,12 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--method" = "cole_hopf_circuit"
 "--propagator" = "qft-diagonal"      # shallowest, fast at small q
 "--bond-dim" = 4
+"--phi-modes" = 6                    # match test: exercise CH Fourier low-pass
 
 [qlbm_circuit]
 "--method" = "qlbm_circuit"
-"--fock-qubits" = 2
-"--qalb-collision-trotter-reps" = 2  # #27.1 Trotter synth (0=dense); err~1/reps^2
+"--fock-qubits" = 3                  # match test (qc=2 too coarse); cheap at q=4
+"--qalb-collision-trotter-reps" = 0  # match test: dense exact collision path
 
 [ftcs_ref]
 "--method" = "ftcs_reference"
