@@ -80,6 +80,12 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--qalb-collision-trotter-reps" = 0  # vs 2, #27.1 Trotter synth (0=dense); err~1/reps^2
 
 # ***********************************************************************************
+# classical D1Q3 LBM: shares QLBM's scheme, so QLBM-vs-lbm isolates the
+# quantum/Fock error and lbm-vs-FTCS isolates the scheme gap.
+[lbm_classical]
+"--method" = "lbm"
+
+# ***********************************************************************************
 [ftcs_ref]
 "--method" = "ftcs_reference"        # owns the FTCS reference for the sweep
 # use at least this many grid points on the classical reference; actual computed from q
@@ -92,5 +98,5 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 # ***********************************************************************************
 # postproc
 
-_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --no-ic"]
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]
 

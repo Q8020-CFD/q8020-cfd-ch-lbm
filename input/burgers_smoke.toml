@@ -36,7 +36,12 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--fock-qubits" = 3                  # match test (qc=2 too coarse); cheap at q=4
 "--qalb-collision-trotter-reps" = 0  # match test: dense exact collision path
 
+# classical D1Q3 LBM: shares QLBM's scheme, so QLBM-vs-lbm isolates the
+# quantum/Fock error and lbm-vs-FTCS isolates the scheme gap.
+[lbm_classical]
+"--method" = "lbm"
+
 [ftcs_ref]
 "--method" = "ftcs_reference"
 
-_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide lbm,shift --no-ic"]
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

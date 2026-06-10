@@ -184,7 +184,7 @@ METHOD_STYLE = {
         'label': 'Cole-Hopf',
     },
     'lbm': {
-        'color': '#d62728', 'ls': '--', 'lw': 1.5,
+        'color': '#9467bd', 'ls': '--', 'lw': 1.5,
         'label': 'LBM classical (D1Q3 BGK)',
     },
     'qlbm_circuit': {
@@ -367,6 +367,13 @@ def _series_runtime_components(case: dict, dt: float):
         'quantum execution': np.concatenate(([0.0], np.cumsum(ex))),
         'other classical': np.concatenate(([0.0], np.cumsum(other))),
     }
+    # 'total' is the elementwise sum of the three bands == cumulative wall
+    # clock; drawn as a distinct over-line so each method's end-to-end cost
+    # reads directly without the viewer summing bands by eye.
+    comp['total'] = (
+        comp['transpilation'] + comp['quantum execution']
+        + comp['other classical']
+    )
     return t, comp
 
 
@@ -387,6 +394,7 @@ def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
         'transpilation': ':',
         'quantum execution': '--',
         'other classical': '-',
+        'total': '-.',          # dash-dot, drawn thicker -- the wall-clock sum
     }
     # The runtime metric ('sim runtime ...') is drawn decomposed into
     # transpile / exec / classical bands rather than one cumulative line.
@@ -423,10 +431,13 @@ def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
                     ymax = max(ymax, final)
                     if final > 0:
                         ymin_pos = min(ymin_pos, final)
+                    is_total = cname == 'total'
                     ln, = ax.plot(
                         [] if animated else t,
                         [] if animated else cum,
-                        color=mcolor, ls=cls, lw=1.4,
+                        color=mcolor, ls=cls,
+                        lw=2.2 if is_total else 1.4,
+                        alpha=1.0 if is_total else 0.9,
                         drawstyle='steps-post' if coarse else 'default',
                         marker='o' if coarse else None, ms=2.5,
                     )
@@ -435,8 +446,9 @@ def setup_resource_curves(res_axes, series, key_style, dt, t_end, animated):
             # tight GIF layout clipping a below-axes legend); method -> colour
             # is already legended in the other panels.
             ax.set_title(
-                'sim runtime (s)\ntranspile (dot)  exec (dash)  classical (solid)',
-                fontsize=7,
+                'sim runtime (s)\ntranspile(dot) exec(dash) classical(solid) '
+                'total(dash-dot)',
+                fontsize=6.5,
             )
             ax.set_yscale('log')
             if ymax > 0:
