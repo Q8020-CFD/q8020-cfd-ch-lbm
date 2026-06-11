@@ -1,0 +1,72 @@
+
+# =====================================================================
+# A-B SHOWCASE (QLBM-favorable) :  nu = 0.025, A = 0.5, q=6
+# ---------------------------------------------------------------------
+# QLBM-favorable showcase, INSIDE the mutual range.  Peaked phi
+# (peak ~24x, A=0.5) pushes CH toward its floor while QLBM stays
+# flat at its scheme floor (tau=6.9) and cheaper/stabler -> QLBM wins on margin.
+# See docs/AB-BAKEOFF-guide.md.  Knobs are best-vs-best (each method at
+# full strength); the postproc legend prints them per method.
+# =====================================================================
+
+[global]
+_output_dir = "/lustre/orion/ard189/scratch/ishangore/burgers_ab_show_q6_qlbm_margin"
+_inject_outdir = "--outdir"
+_env = "./q8020-mps-burgers/.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+_slurm = true
+_slurm_project = "ard189"
+_slurm_pack_venvs = ["./q8020-mps-burgers/.venv"]
+_slurm_partition = "batch"
+_slurm_walltime = "02:00:00"
+_slurm_cores_per_task = 1
+_slurm_cores_per_node = 64
+_slurm_exclusive_node = false
+_run_mode = "parallel"
+_trials = 1
+_case_timeout = 6300   # 1h45m; leaves 15m margin under 2h walltime
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+"--save-every" = 10
+
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.5
+"--nu" = 0.025
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 6
+"--n-steps" = 100
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8                      # headroom for peaked phi (smooth here)
+"--phi-modes" = 8                     # low-pass shot noise before log-deriv
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3                   # qc=3 convergent (qc=2 too coarse)
+"--qalb-collision-trotter-reps" = 0   # dense exact collision = best L2
+
+[lbm_classical]
+"--method" = "lbm"
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800                  # finer than N=64 to stay a faithful ref
+"--save-every" = 10                   # reference must snapshot at the cadence
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./q8020-mps-burgers/.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]
