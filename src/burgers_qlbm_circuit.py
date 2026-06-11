@@ -470,14 +470,13 @@ def run_qlbm_circuit_simulation(
                     from qiskit_aer import AerSimulator
                     backend_eff = AerSimulator()
 
-                # Use the shared qutil transpile + execute helpers so
-                # QLBM and cole_hopf shots paths honour the same
-                # --optimization-level / --seed contract, and so
-                # hardware backends flow through SamplerV2 consistently.
+                # Shared execute helper (hardware backends flow through
+                # SamplerV2 consistently); qiskit.transpile lowers the
+                # dense step to the hardware basis we both run and report.
+                from qiskit import transpile as qiskit_transpile
                 from q8020_cfd_qutil.circuit import (
                     execute_circuit_counts,
-                    safe_circuit_stats_in_basis,
-                    transpile_circuit,
+                    get_circuit_info,
                 )
 
                 # No explicit classical register: measure_all() adds its
@@ -489,30 +488,37 @@ def run_qlbm_circuit_simulation(
                 qc_full.initialize(psi_in.tolist(), range(n_qubits))
                 qc_full.compose(qc, inplace=True)
                 qc_full.measure_all()
-                qc_t, t_info = transpile_circuit(
-                    qc_full, backend_eff,
-                    optimization_level=optimization_level,
-                    seed_transpiler=seed,
-                )
-                transpile_t = t_info["wall_time"]
-                # Aer keeps the dense collide+stream step as one
-                # un-lowered UnitaryGate, so its transpiled depth/cx are
-                # meaningless.  Decompose to a hardware basis purely for
-                # honest depth/gate reporting (does not affect execution).
-                # Tracked as metric overhead, separate from the pipeline
-                # transpile time above.
-                # Hardware-basis decomposition for honest depth/cx, run
-                # out-of-process so a synthesis crash/hang can't kill the
-                # run.  metric_transpile_timeout caps it (0 = uncapped).
-                t_m = time.time()
-                circ_after = safe_circuit_stats_in_basis(
-                    qc_full, QLBM_METRIC_BASIS,
-                    optimization_level=optimization_level,
-                    seed_transpiler=seed,
-                    timeout=metric_transpile_timeout,
-                    try_decompose=False,
-                )
-                metric_t = time.time() - t_m
+                # Hardware-faithful execution: decompose the dense
+                # collide+stream step to the hardware basis and run THAT
+                # gate-level circuit -- what a real device would execute --
+                # not the un-lowered UnitaryGate shortcut.  The executed
+                # circuit is the one whose depth/cx we report: one
+                # transpile, no throwaway metric pass.  Aer runs cx/rz/sx/x
+                # natively, so the simulated cost reflects real gate count.
+                t_tr = time.time()
+                _tr_kwargs: dict[str, Any] = {
+                    "basis_gates": QLBM_METRIC_BASIS,
+                    "optimization_level": optimization_level,
+                }
+                if seed is not None:
+                    _tr_kwargs["seed_transpiler"] = seed
+                qc_t = qiskit_transpile(qc_full, **_tr_kwargs)
+                transpile_t = time.time() - t_tr
+                t_info = {
+                    "wall_time": transpile_t,
+                    "optimization_level": optimization_level,
+                    "before": get_circuit_info(qc_full),
+                    "after": get_circuit_info(qc_t),
+                }
+                # Executed circuit IS the measured one -- no separate
+                # hardware-cost transpile.
+                metric_t = 0.0
+                circ_after = {
+                    "available": True,
+                    "depth": qc_t.depth(),
+                    "gate_counts": dict(qc_t.count_ops()),
+                    "num_qubits": qc_t.num_qubits,
+                }
                 counts, exec_info = execute_circuit_counts(
                     qc_t, backend_eff, shots=shots, seed=seed,
                 )

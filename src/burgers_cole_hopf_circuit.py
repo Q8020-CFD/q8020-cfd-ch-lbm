@@ -381,8 +381,17 @@ def heat_qft_full_circuit(
 ) -> QuantumCircuit:
     """Full evolution circuit: N_steps QFT-diagonal Trotter layers.
 
-    Returns circuit on q+1 qubits with N_steps classical bits
-    (one per ancilla measurement) plus q bits for final data readout.
+    Returns circuit on q+N_steps qubits with N_steps classical bits
+    (one per ancilla) plus q bits for final data readout.
+
+    Deferred measurement: each step's block-encoding post-selection
+    ancilla is a distinct qubit, all measured together at the end (no
+    mid-circuit measure/reset).  This is statistically identical to
+    measuring+resetting one reused ancilla per step (post-selection
+    already requires the whole anc_hist register to be zero), but it
+    keeps Aer on the cheap sample-once-from-statevector path instead of
+    the per-shot trajectory path that mid-circuit measurement forces.
+    Costs N_steps-1 extra qubits (trivial for statevector sim).
 
     bc='neumann' dispatches to the DCT-II propagator path.
     """
@@ -397,11 +406,12 @@ def heat_qft_full_circuit(
     dt = T / N_steps
 
     data = list(range(q))
-    anc = q
+    # One post-selection ancilla per internal step (deferred measurement).
+    ancillas = [q + step for step in range(N_steps)]
 
     anc_cr = ClassicalRegister(N_steps, "anc_hist")
     data_cr = ClassicalRegister(q, "data")
-    qc = QuantumCircuit(q + 1, name="heat_qft_full")
+    qc = QuantumCircuit(q + N_steps, name="heat_qft_full")
     qc.add_register(anc_cr)
     qc.add_register(data_cr)
 
@@ -409,15 +419,18 @@ def heat_qft_full_circuit(
 
     qft = QFTGate(q)
     qft_inv = QFTGate(q).inverse()
-    cond_qc = build_conditional_ry(data, anc, theta)
 
     for step in range(N_steps):
         qc.append(qft, data)
-        qc.compose(cond_qc, inplace=True)
+        qc.compose(
+            build_conditional_ry(data, ancillas[step], theta),
+            inplace=True,
+        )
         qc.append(qft_inv, data)
-        qc.measure(anc, anc_cr[step])
-        if step < N_steps - 1:
-            qc.reset(anc)
+
+    # Deferred ancilla readout: measure every step's ancilla at the end.
+    for step in range(N_steps):
+        qc.measure(ancillas[step], anc_cr[step])
 
     # Final data measurement
     for i in range(q):
@@ -1179,6 +1192,7 @@ def _run_shots_measure_reprepare(
             file=sys.stderr, flush=True,
         )
         skip_stats = None
+        metric_t = 0.0
         if _skip_transpile:
             qc_t = raw_qc
             t_info = {
@@ -1186,32 +1200,34 @@ def _run_shots_measure_reprepare(
                 "optimization_level": optimization_level,
                 "skipped": "AerSimulator+LCU",
             }
-            # Execution skips transpile (Aer runs the raw circuit), but we
-            # still want hardware-cost depth/gate stats.  Get them
-            # out-of-process so the known qs_decomposition segfault on the
-            # LCU SELECT gates degrades gracefully instead of killing the
-            # run.  Unforced segments are identical -> compute once.
-            if metric_stats_cache is None or source_fn is not None:
-                from q8020_cfd_qutil.circuit import (
-                    DEFAULT_METRIC_BASIS,
-                    safe_circuit_stats_in_basis,
-                )
-                # Short, single-attempt budget: metrics must never stall
-                # the run.  If LCU's SELECT-gate synthesis can't finish in
-                # time it records unavailable and the run proceeds.
-                metric_stats_cache = safe_circuit_stats_in_basis(
-                    raw_qc, DEFAULT_METRIC_BASIS,
-                    optimization_level=optimization_level,
-                    seed_transpiler=seed,
-                    timeout=metric_transpile_timeout, try_decompose=False,
-                )
-            skip_stats = metric_stats_cache
         else:
             qc_t, t_info = transpile_circuit(
                 raw_qc, backend,
                 optimization_level=optimization_level,
                 seed_transpiler=seed,
             )
+        # Hardware-cost stats: decompose raw_qc to DEFAULT_METRIC_BASIS so
+        # CH reports honest cx-depth/gate counts comparable to QLBM,
+        # regardless of branch.  The Aer execution path either skips
+        # transpile (LCU) or lowers to the backend basis -- neither yields
+        # a faithful hardware cx-depth, so we measure it explicitly here.
+        # Run out-of-process so a qs_decomposition segfault/hang degrades
+        # gracefully instead of killing the run.  Identical segments
+        # (source_fn is None) are computed once and cached.
+        if metric_stats_cache is None or source_fn is not None:
+            from q8020_cfd_qutil.circuit import (
+                DEFAULT_METRIC_BASIS,
+                safe_circuit_stats_in_basis,
+            )
+            _t_m = time.time()
+            metric_stats_cache = safe_circuit_stats_in_basis(
+                raw_qc, DEFAULT_METRIC_BASIS,
+                optimization_level=optimization_level,
+                seed_transpiler=seed,
+                timeout=metric_transpile_timeout, try_decompose=False,
+            )
+            metric_t = time.time() - _t_m
+        skip_stats = metric_stats_cache
         counts, exec_info = execute_circuit_counts(
             qc_t, backend, shots=shots, seed=seed,
         )
@@ -1269,12 +1285,13 @@ def _run_shots_measure_reprepare(
                 # execute) for this segment.
                 "circuit_construction_time_s": construct_t,
                 "transpilation_time_s": t_info.get("wall_time", 0.0),
+                "metric_transpile_time_s": metric_t,
                 "execution_time_s": exec_info.get("wall_time", 0.0),
                 "n_circuits": 1,
             }
-            # On the skip path, attach the out-of-process hardware-cost
-            # stats (flat keys the postproc rolls up); otherwise the
-            # in-process transpile.after already carries them.
+            # Hardware-cost stats (DEFAULT_METRIC_BASIS decomposition of
+            # raw_qc), flat keys the postproc rolls up.  Computed on both
+            # branches now so CH always reports honest cx-depth/gate counts.
             if skip_stats is not None and skip_stats.get("available"):
                 met["circuit_depth"] = skip_stats["depth"]
                 met["gate_counts"] = skip_stats["gate_counts"]
@@ -1528,9 +1545,6 @@ def _run_shots_batch(
     # its wall time evenly across them for an honest per-iteration rollup
     # (summing the nested transpile.wall_time would N-times overcount).
     transpile_per = transpile_wall / max(1, len(raw_circs))
-    # Single-attempt cache for skip-path (LCU) hardware-cost stats so the
-    # metric transpile is tried at most once and can never stall the run.
-    skip_metric_cache = None
     results: list[tuple[np.ndarray, dict[str, Any]]] = []
     for idx, (raw_qc, qc_t, t_info, s) in enumerate(zip(
         raw_circs, qc_t_list, t_info_list, snap_steps,
@@ -1581,30 +1595,31 @@ def _run_shots_batch(
             "execution_time_s": exec_info.get("wall_time", 0.0),
             "n_circuits": 1,
         }
-        # Skip path (Aer+LCU): execution ran the raw circuit, so grab
-        # hardware-cost stats out-of-process (crash-safe).  Non-skip
-        # circuits already carry stats via transpile.after.
-        if _skip_transpile:
-            if skip_metric_cache is None:
-                from q8020_cfd_qutil.circuit import (
-                    DEFAULT_METRIC_BASIS,
-                    safe_circuit_stats_in_basis,
-                )
-                skip_metric_cache = safe_circuit_stats_in_basis(
-                    raw_qc, DEFAULT_METRIC_BASIS,
-                    optimization_level=optimization_level,
-                    seed_transpiler=seed,
-                    timeout=metric_transpile_timeout, try_decompose=False,
-                )
-            bs = skip_metric_cache
-            if bs.get("available"):
-                met["circuit_depth"] = bs["depth"]
-                met["gate_counts"] = bs["gate_counts"]
-                met["n_qubits"] = bs["num_qubits"]
-                met["circuit_metrics_available"] = True
-            else:
-                met["circuit_metrics_available"] = False
-                met["circuit_metrics_reason"] = bs.get("reason")
+        # Hardware-cost stats: decompose raw_qc to DEFAULT_METRIC_BASIS for
+        # honest cx-depth/gate counts comparable to QLBM, on both branches.
+        # Each batched circuit covers a different snap_step (different
+        # depth), so stats are computed per-circuit, not cached across them.
+        # Out-of-process for crash-safety on the LCU SELECT synthesis.
+        from q8020_cfd_qutil.circuit import (
+            DEFAULT_METRIC_BASIS,
+            safe_circuit_stats_in_basis,
+        )
+        _t_m = time.time()
+        bs = safe_circuit_stats_in_basis(
+            raw_qc, DEFAULT_METRIC_BASIS,
+            optimization_level=optimization_level,
+            seed_transpiler=seed,
+            timeout=metric_transpile_timeout, try_decompose=False,
+        )
+        met["metric_transpile_time_s"] = time.time() - _t_m
+        if bs.get("available"):
+            met["circuit_depth"] = bs["depth"]
+            met["gate_counts"] = bs["gate_counts"]
+            met["n_qubits"] = bs["num_qubits"]
+            met["circuit_metrics_available"] = True
+        else:
+            met["circuit_metrics_available"] = False
+            met["circuit_metrics_reason"] = bs.get("reason")
         # Surface LCU normalization when the propagator is LCU.
         if raw_qc.metadata and "lcu_lambda" in raw_qc.metadata:
             met["lcu_lambda"] = raw_qc.metadata["lcu_lambda"]

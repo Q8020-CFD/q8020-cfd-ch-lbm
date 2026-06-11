@@ -715,6 +715,16 @@ def main() -> None:
              "series is rendered as the reference, not as a method line. "
              "Must be present in the sweep (run it as its own TOML case).",
     )
+    p.add_argument(
+        '--vs', default='qlbm_circuit:lbm',
+        help="Comma-separated method pairs A:B to add as extra error curves "
+             "in the error panel: rel. L2 of A's solution vs B's, instead "
+             "of vs the global reference.  Use to isolate a quantum method's "
+             "error from a scheme gap -- e.g. qlbm_circuit:lbm shows QLBM's "
+             "quantum/truncation error against classical LBM, separate from "
+             "the LBM-vs-FTCS scheme gap that QLBM-vs-FTCS conflates.  Empty "
+             "to disable; pairs whose methods aren't both present are skipped.",
+    )
     args = p.parse_args()
     hidden = {m.strip() for m in args.hide.split(',') if m.strip()}
 
@@ -1056,7 +1066,14 @@ def main() -> None:
         fontsize=10, va='top', fontfamily='monospace',
     )
 
-    # Error panel: each series vs the reference.
+    # Error panel: each series vs the reference.  Legend labels are kept
+    # terse so the lines underneath stay readable: drop the method's
+    # parenthetical/bracketed qualifiers ("(D1Q3 BGK)", "[bd8 phi8]") and,
+    # since the y-axis already states "vs FTCS", omit that redundant suffix
+    # on the per-reference curves.
+    def _terse(label: str) -> str:
+        return label.split('(')[0].split('[')[0].strip()
+
     err_lines: dict[str, plt.Line2D] = {}
     errors: dict[str, np.ndarray] = {}
     for key in frames:
@@ -1072,9 +1089,51 @@ def main() -> None:
         errors[key] = err
         ln, = ax_err.plot(
             [], [], ls=sty['ls'], color=sty['color'], lw=1.5,
-            label=f'{sty["label"]} vs {ref_label.split()[0]}',
+            label=_terse(sty['label']),
         )
         err_lines[key] = ln
+
+    # Extra error curves comparing one method against another (not the global
+    # reference).  Isolates a quantum method's own error from a scheme gap:
+    # qlbm_circuit:lbm shows QLBM-vs-classical-LBM (quantum/truncation error),
+    # separate from the LBM-vs-FTCS scheme gap that QLBM-vs-FTCS conflates.
+    def _resolve_frame_key(token: str) -> str | None:
+        hits = [
+            k for k in frames
+            if token in {k, key_method.get(k), key_caseid.get(k)}
+        ]
+        return hits[0] if len(hits) == 1 else None
+
+    pairs = [s.strip() for s in args.vs.split(',') if s.strip()]
+    for pair in pairs:
+        if ':' not in pair:
+            print(f"  --vs '{pair}': not an A:B pair, skipping",
+                  file=sys.stderr)
+            continue
+        a_tok, b_tok = (t.strip() for t in pair.split(':', 1))
+        a_key, b_key = _resolve_frame_key(a_tok), _resolve_frame_key(b_tok)
+        if a_key is None or b_key is None:
+            print(
+                f"  --vs '{pair}': both methods must be present "
+                f"(got A={a_key}, B={b_key}); skipping",
+                file=sys.stderr,
+            )
+            continue
+        err = np.full(len(step_keys_common), np.nan)
+        for i in range(len(step_keys_common)):
+            fa, fb = frames[a_key][i], frames[b_key][i]
+            norm_b = np.linalg.norm(fb)
+            if (np.all(np.isfinite(fa)) and np.all(np.isfinite(fb))
+                    and norm_b > 1e-15):
+                err[i] = np.linalg.norm(fa - fb) / norm_b
+        pair_key = f"{a_key}|vs|{b_key}"
+        errors[pair_key] = err
+        a_sty, b_sty = key_style[a_key], key_style[b_key]
+        ln, = ax_err.plot(
+            [], [], ls=':', color=a_sty['color'], lw=1.5,
+            label=f"{_terse(a_sty['label'])} vs {_terse(b_sty['label'])}",
+        )
+        err_lines[pair_key] = ln
 
     ax_err.set_xlim(times[0], times[-1])
     all_errs = np.concatenate(
@@ -1089,7 +1148,11 @@ def main() -> None:
     )
     ax_err.set_xlabel("Time")
     ax_err.set_ylabel(f"Rel. L2 error vs {ref_label.split()[0]}")
-    ax_err.legend(loc='upper left', fontsize=8)
+    ax_err.legend(
+        loc='upper left', fontsize=7, ncol=2,
+        labelspacing=0.3, columnspacing=1.0, handlelength=1.5,
+        framealpha=0.6,
+    )
     ax_err.grid(alpha=0.2)
 
     # Animated cumulative-resource curves (depth / CX / circuits / runtime),
