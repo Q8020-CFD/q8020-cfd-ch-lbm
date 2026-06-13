@@ -25,6 +25,14 @@ Phase A (this module): builds the dense propagator, converts to MPO
 via from_dense, and applies to the MPS.  The propagator MPO is
 constructed ONCE at setup and reused for every time step.  Dense
 construction limits this to q <= ~12; same ceiling as F2 Phase A.
+
+References (the Cole-Hopf substitution):
+  - J. D. Cole, "On a quasi-linear parabolic equation occurring in
+    aerodynamics," Quart. Appl. Math. 9, 225-236 (1951).
+    doi:10.1090/qam/42889
+  - E. Hopf, "The partial differential equation u_t + u u_x = mu u_xx,"
+    Commun. Pure Appl. Math. 3, 201-230 (1950).
+    doi:10.1002/cpa.3160030302
 """
 
 from __future__ import annotations
