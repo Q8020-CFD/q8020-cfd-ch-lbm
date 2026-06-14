@@ -1,0 +1,64 @@
+
+# =====================================================================
+# A-B SHOCK CHALLENGE :  A=0.4, nu=0.03, q=6  (run to 90% t_shock)
+# ---------------------------------------------------------------------
+# The only cases in the set that run long enough to FORM the shock.
+# Operating point chosen so BOTH methods stay viable THROUGH the shock:
+#   CH peakedness exp(A/2*pi*nu) ~ 8.3x at the start (sharpens as the
+#      shock forms, but leaves margin below CH's resolvable edge).
+#   QLBM tau = 0.5 + nu*N = 2.42 at q6 (stable; grows with q).
+# n_steps reaches ~90% of t_shock (= 1/(A*2*pi) = 0.398); the wave
+# steepens visibly and both methods are stressed where they differ most.
+# Same A=0.4/nu=0.03 at q=6/7/8 (companion files); n_steps scales with N
+# to hold the physical window fixed.  See docs/AB-BAKEOFF-guide.md.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 5
+"--save-every" = 10
+
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 6
+"--n-steps" = 230                     # ~90% t_shock at q6 (N=64); /10-aligned
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8                      # headroom as phi sharpens toward shock
+"--phi-modes" = 8                     # low-pass shot noise before log-deriv
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3                   # qc=3 convergent (qc=2 too coarse)
+"--qalb-collision-trotter-reps" = 0   # dense exact collision = best L2
+
+[lbm_classical]
+"--method" = "lbm"
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800                  # finer than N=64 to stay a faithful ref
+"--save-every" = 10                   # reference must snapshot at the cadence
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

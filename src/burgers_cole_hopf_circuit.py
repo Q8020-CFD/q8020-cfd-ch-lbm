@@ -378,20 +378,33 @@ def heat_qft_full_circuit(
     N_steps: int,
     L_box: float,
     bc: str = "periodic",
+    max_qubits: int | None = None,
 ) -> QuantumCircuit:
     """Full evolution circuit: N_steps QFT-diagonal Trotter layers.
 
-    Returns circuit on q+N_steps qubits with N_steps classical bits
-    (one per ancilla) plus q bits for final data readout.
+    Blocked deferred measurement, sized to the qubit budget.  The
+    max_qubits budget leaves (max_qubits - q) ancilla qubits; the
+    evolution is split into blocks of that many steps.  Within a block
+    each step gets its own post-selection ancilla (deferred — no
+    mid-circuit measurement); at the block boundary the whole ancilla
+    register is measured into anc_hist, then reset and reused for the
+    next block.  Every step still writes a distinct anc_hist bit, so
+    post-selection (anc register all-zero) is unchanged.
 
-    Deferred measurement: each step's block-encoding post-selection
-    ancilla is a distinct qubit, all measured together at the end (no
-    mid-circuit measure/reset).  This is statistically identical to
-    measuring+resetting one reused ancilla per step (post-selection
-    already requires the whole anc_hist register to be zero), but it
-    keeps Aer on the cheap sample-once-from-statevector path instead of
-    the per-shot trajectory path that mid-circuit measurement forces.
-    Costs N_steps-1 extra qubits (trivial for statevector sim).
+    This interpolates the two extremes:
+      * block >= N_steps  -> fully deferred, one block, no reset:
+        q+N_steps qubits, zero mid-circuit measurement (Aer's cheap
+        sample-once-from-statevector path).
+      * block == 1        -> single reused ancilla, measure+reset every
+        step: q+1 qubits, N_steps measurement rounds.
+    The default sits between them: it uses every qubit the budget allows
+    so the circuit fits while minimising measurement rounds
+    (ceil(N_steps / block)), which keeps Aer closer to the fast path
+    than the one-ancilla fallback would.
+
+    max_qubits: total qubit budget.  Defaults to 2*q, i.e. q ancilla,
+        so the deferred block is q steps wide and the circuit never
+        exceeds twice the data register.
 
     bc='neumann' dispatches to the DCT-II propagator path.
     """
@@ -403,34 +416,40 @@ def heat_qft_full_circuit(
             "expected 'periodic' or 'neumann'"
         )
 
+    if max_qubits is None:
+        max_qubits = 2 * q
+
     dt = T / N_steps
 
     data = list(range(q))
-    # One post-selection ancilla per internal step (deferred measurement).
-    ancillas = [q + step for step in range(N_steps)]
+    # Ancilla qubits the budget allows, and the deferred block width.
+    n_anc = max(1, max_qubits - q)
+    block = min(n_anc, N_steps)
+
+    theta = compute_theta_exact(nu, dt, q, L_box)
+    qft = QFTGate(q)
+    qft_inv = QFTGate(q).inverse()
+    cond = [build_conditional_ry(data, q + j, theta) for j in range(block)]
 
     anc_cr = ClassicalRegister(N_steps, "anc_hist")
     data_cr = ClassicalRegister(q, "data")
-    qc = QuantumCircuit(q + N_steps, name="heat_qft_full")
+    qc = QuantumCircuit(q + block, name="heat_qft_full")
     qc.add_register(anc_cr)
     qc.add_register(data_cr)
 
-    theta = compute_theta_exact(nu, dt, q, L_box)
-
-    qft = QFTGate(q)
-    qft_inv = QFTGate(q).inverse()
-
     for step in range(N_steps):
+        j = step % block            # which ancilla within the block
         qc.append(qft, data)
-        qc.compose(
-            build_conditional_ry(data, ancillas[step], theta),
-            inplace=True,
-        )
+        qc.compose(cond[j], inplace=True)
         qc.append(qft_inv, data)
-
-    # Deferred ancilla readout: measure every step's ancilla at the end.
-    for step in range(N_steps):
-        qc.measure(ancillas[step], anc_cr[step])
+        # Block boundary (or final step): flush ancilla -> anc_hist.
+        if j == block - 1 or step == N_steps - 1:
+            blk_start = step - j
+            for k in range(j + 1):
+                qc.measure(q + k, anc_cr[blk_start + k])
+            if step < N_steps - 1:
+                for k in range(j + 1):
+                    qc.reset(q + k)
 
     # Final data measurement
     for i in range(q):

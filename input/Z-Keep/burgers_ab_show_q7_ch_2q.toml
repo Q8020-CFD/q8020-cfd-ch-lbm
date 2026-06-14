@@ -1,0 +1,62 @@
+
+# =====================================================================
+# CH 2*q-cap validation : nu = 0.04, A = 0.6, q=7
+# ---------------------------------------------------------------------
+# Same physics as burgers_ab_show_q7_ch_batch, trimmed to the two
+# Cole-Hopf series only -- the case that exercises the new 2*q ancilla
+# cap in heat_qft_full_circuit.
+#
+# Batch mode builds one circuit per frame, each propagated IC -> dt*s,
+# so a frame at snap_step s needs q+s qubits under the old deferred
+# layout (e.g. s=33 -> 40 qubits, over Aer's 31).  The fix caps the
+# deferred fast path at 2*q=14 qubits (used only while s <= q); every
+# deeper frame falls back to the single reused ancilla (q+1=8 qubits),
+# so the whole frame grid now fits.  Reprepare series carried along as
+# the q+1-per-segment baseline for comparison.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--q" = 7
+"--n-steps" = 200
+"--cfl" = 0.1
+"--nu" = 0.04
+"--bc" = "periodic"
+"--ic" = "sine"
+"--ic-amplitude" = 0.6
+"--source" = "none"
+"--seed" = 1234
+
+"--save-every" = 10
+
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+# ---------------------------------------------------------------------
+# Reprepare baseline: 20 segments of 10 steps (q+1 qubits per segment).
+[cole_hopf_circuit_reprepare]
+"--method" = "cole_hopf_circuit"
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 5
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8
+"--phi-modes" = 8
+
+# Batch: one circuit per frame, IC -> dt*s.  Frames at s=10,20,...,200
+# all exceed q=7, so each takes the reused-ancilla fallback (q+1=8).
+[cole_hopf_circuit_batch]
+"--method" = "cole_hopf_circuit"
+"--evolution-mode" = "single"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8
+"--phi-modes" = 8
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor cole_hopf_circuit_batch --hide shift --no-ic"]

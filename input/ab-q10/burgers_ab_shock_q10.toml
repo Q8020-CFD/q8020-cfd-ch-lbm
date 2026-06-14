@@ -1,12 +1,16 @@
 
 # =====================================================================
-# A-B SHOWCASE (QLBM-favorable) :  nu = 0.025, A = 0.5, q=6
+# A-B SHOCK CHALLENGE :  A=0.4, nu=0.03, q=10  (run to 90% t_shock)
 # ---------------------------------------------------------------------
-# QLBM-favorable showcase, INSIDE the mutual range.  Peaked phi
-# (peak ~24x, A=0.5) pushes CH toward its floor while QLBM stays
-# flat at its scheme floor (tau=6.9) and cheaper/stabler -> QLBM wins on margin.
-# See docs/AB-BAKEOFF-guide.md.  Knobs are best-vs-best (each method at
-# full strength); the postproc legend prints them per method.
+# The only cases in the set that run long enough to FORM the shock.
+# Operating point chosen so BOTH methods stay viable THROUGH the shock:
+#   CH peakedness exp(A/2*pi*nu) ~ 8.3x at the start (sharpens as the
+#      shock forms, but leaves margin below CH's resolvable edge).
+#   QLBM tau = 0.5 + nu*N = 31.2 at q10 (stable; grows with q).
+# n_steps reaches ~90% of t_shock (= 1/(A*2*pi) = 0.398); same physical
+# window as the q6/7/8 shock files, n_steps scaled with N (x4 from q8).
+# segment-size=10 = q -> each CH segment fully defers within 2*q=20.
+# See docs/AB-BAKEOFF-guide.md.
 # =====================================================================
 
 [global]
@@ -26,21 +30,21 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--bc" = "periodic"
 "--ic" = "sine"
 "--source" = "none"
-"--ic-amplitude" = 0.5
-"--nu" = 0.025
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
 
 "--seed" = 1234
 "--shots" = 150000
 "--metric-transpile-timeout" = 0
 
-"--q" = 6
-"--n-steps" = 100
+"--q" = 10
+"--n-steps" = 3680                    # ~90% t_shock at q10 (N=1024); /10-aligned
 
 # ---------------------------------------------------------------------
 [cole_hopf_circuit]
 "--method" = "cole_hopf_circuit"
 "--propagator" = "qft-diagonal"
-"--bond-dim" = 8                      # headroom for peaked phi (smooth here)
+"--bond-dim" = 32                     # headroom as phi sharpens toward shock
 "--phi-modes" = 8                     # low-pass shot noise before log-deriv
 
 [qlbm_circuit]
@@ -53,7 +57,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 
 [ftcs_ref]
 "--method" = "ftcs_reference"
-"--ref-points" = 800                  # finer than N=64 to stay a faithful ref
+"--ref-points" = 2000                 # finer than N=1024 to stay a faithful ref
 "--save-every" = 10                   # reference must snapshot at the cadence
 
 # ---------------------------------------------------------------------

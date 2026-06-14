@@ -1,0 +1,89 @@
+
+# =====================================================================
+# A-B SHOWCASE (CH readout-protocol comparison) : nu = 0.04, A = 0.6, q=7
+# ---------------------------------------------------------------------
+# Same physics as burgers_ab_show_q7_ch_stress, but adds a SECOND
+# Cole-Hopf case that reads out in "batch" form (--evolution-mode
+# single): one circuit per frame, each propagated directly from the IC
+# to time dt*s, so frames are independent reads instead of a noise-
+# accumulating measure-reprepare chain.
+#
+# Two CH series share the method name; the postproc auto-disambiguates
+# them by --evolution-mode (distinct linestyles/labels), so no postproc
+# change is needed.  QLBM/LBM/FTCS carried over unchanged for context.
+#
+# Frames: --save-every 10 over --n-steps 200 => 20 frames at steps
+# 10,20,...,200, the same 20-frame grid QALB lands on (n_steps_lbm=20).
+#
+# Flag placement (every flag sits where the method that consumes it
+# lives -- see argparse scope tags in burgers_solver.py):
+#   [global]              physics + IC + run control read by ALL methods
+#                         (+ --shots/--metric-transpile-timeout, shared
+#                          by the two circuit methods, inert for LBM/FTCS)
+#   [cole_hopf_circuit_*] CH-only knobs: propagator, bond-dim, phi-modes,
+#                         evolution-mode, segment-size (reprepare only)
+#   [qlbm_circuit]        QLBM-only: fock-qubits, collision-trotter-reps
+#   [ftcs_ref]            FTCS-only: ref-points
+# =====================================================================
+
+[global]
+# -- run plumbing (all methods) --
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+# -- physics / discretisation (all methods) --
+"--q" = 7
+"--n-steps" = 200
+"--cfl" = 0.1
+"--nu" = 0.04
+"--bc" = "periodic"
+"--ic" = "sine"
+"--ic-amplitude" = 0.6
+"--source" = "none"
+"--seed" = 1234
+
+# -- frame cadence: 20 frames at steps 10,20,...,200 (all methods) --
+"--save-every" = 10
+
+# -- shared circuit knobs (CH + QLBM; inert for classical LBM/FTCS) --
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+# ---------------------------------------------------------------------
+# CH: measure-and-reprepare, 40 segments of 5 steps.
+# segment_size=5 is the largest divisor of save_every=10 that is <= q=7,
+# so each segment fully defers within the 2*q=14 cap (q+5=12 qubits, no
+# mid-circuit ancilla reset -> Aer's cheap sample-from-statevector path)
+# AND every 20 frames (step 10,20,...,200) lands on a segment boundary,
+# aligning CH with QLBM/LBM/FTCS.  Per-segment cost is flat (always 5
+# steps): total work scales with segment count, not elapsed time.
+[cole_hopf_circuit_reprepare]
+"--method" = "cole_hopf_circuit"
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 5                   # <= q=7 -> fully deferred, fits 2q
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8                       # MPS state-prep truncation
+"--phi-modes" = 8                      # low-pass shot noise before log-deriv
+
+# ---------------------------------------------------------------------
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3                    # qc=3 convergent (qc=2 too coarse)
+"--qalb-collision-trotter-reps" = 0    # dense exact collision = best L2
+
+# ---------------------------------------------------------------------
+[lbm_classical]
+"--method" = "lbm"                     # classical D1Q3 BGK; no circuit knobs
+
+# ---------------------------------------------------------------------
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800                   # finer than N=128 to stay a faithful ref
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

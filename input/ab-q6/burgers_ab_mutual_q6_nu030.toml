@@ -1,10 +1,10 @@
 
 # =====================================================================
-# A-B SHOWCASE (high-amplitude CH stress) :  nu = 0.04, A = 0.6, q=7
+# A-B MUTUAL-RANGE BAKEOFF :  nu = 0.03  (A=0.3, q=6)
 # ---------------------------------------------------------------------
-# High-amplitude stress, INSIDE the mutual range.  A=0.6 drives a
-# stronger, more nonlinear wave (peak ~11x); tests how far CH holds
-# and whether QLBM's Fock truncation (qc=3) copes.  QLBM tau=10.7.
+# Single operating point, no swept variable.  Both methods viable here:
+# Both methods viable; QLBM tau = 0.5 + nu*256 >> 1, CH well above floor.
+# CH peakedness exp(A/2*pi*nu) ~ 4.9x at this point.
 # See docs/AB-BAKEOFF-guide.md.  Knobs are best-vs-best (each method at
 # full strength); the postproc legend prints them per method.
 # =====================================================================
@@ -20,21 +20,21 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 
 "--cfl" = 0.1
 "--evolution-mode" = "measure_reprepare"
-"--segment-size" = 10
+"--segment-size" = 5
 "--save-every" = 10
 
 "--bc" = "periodic"
 "--ic" = "sine"
 "--source" = "none"
-"--ic-amplitude" = 0.6
-"--nu" = 0.04
+"--ic-amplitude" = 0.3
+"--nu" = 0.03
 
 "--seed" = 1234
 "--shots" = 150000
 "--metric-transpile-timeout" = 0
 
-"--q" = 7
-"--n-steps" = 200
+"--q" = 6
+"--n-steps" = 100
 
 # ---------------------------------------------------------------------
 [cole_hopf_circuit]
@@ -53,7 +53,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 
 [ftcs_ref]
 "--method" = "ftcs_reference"
-"--ref-points" = 800                  # finer than N=128 to stay a faithful ref
+"--ref-points" = 800                  # finer than N=64 to stay a faithful ref
 "--save-every" = 10                   # reference must snapshot at the cadence
 
 # ---------------------------------------------------------------------

@@ -1,0 +1,60 @@
+
+# =====================================================================
+# A-B MUTUAL-RANGE BAKEOFF :  nu = 0.05   (A=0.3, q=10)
+# ---------------------------------------------------------------------
+# Single operating point, no swept variable.  Both methods viable here.
+# q=10 (N=1024): n_steps scaled x4 from the q=8 file (N=256) to hold the
+# physical window fixed.  segment-size=10 = q, so each CH segment fully
+# defers within the 2*q=20 qubit cap (q+10=20, no mid-circuit reset).
+# See docs/AB-BAKEOFF-guide.md.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+"--save-every" = 10
+
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--nu" = 0.05
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 10
+"--n-steps" = 1600
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 32                     # headroom for peaked phi (smooth here)
+"--phi-modes" = 8                     # low-pass shot noise before log-deriv
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3                   # qc=3 convergent (qc=2 too coarse)
+"--qalb-collision-trotter-reps" = 0   # dense exact collision = best L2
+
+[lbm_classical]
+"--method" = "lbm"
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 2000                 # finer than N=1024 to stay a faithful ref
+"--save-every" = 10                   # reference must snapshot at the cadence
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]

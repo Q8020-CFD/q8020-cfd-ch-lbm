@@ -1,12 +1,13 @@
 
 # =====================================================================
-# A-B SHOWCASE (CH-favorable) :  nu = 0.08, A = 0.3, q=8
+# A-B SHOWCASE (high-amplitude CH stress) :  nu = 0.04, A = 0.6, q=10
 # ---------------------------------------------------------------------
-# CH-favorable showcase, INSIDE the mutual range.  Very smooth phi
-# (peak ~1.8x): CH exact-via-transform should beat QLBM's ~0.11
-# O(Omega^2)/step scheme floor.  QLBM tau=21, fully stable.
-# See docs/AB-BAKEOFF-guide.md.  Knobs are best-vs-best (each method at
-# full strength); the postproc legend prints them per method.
+# High-amplitude stress, INSIDE the mutual range.  A=0.6 drives a
+# stronger, more nonlinear wave (peak ~11x); tests how far CH holds
+# and whether QLBM's Fock truncation (qc=3) copes.  QLBM tau ~ 41 at q10.
+# q=10 (N=1024): n_steps scaled x4 from q=8 to hold the window fixed.
+# segment-size=10 = q -> each CH segment fully defers within 2*q=20.
+# See docs/AB-BAKEOFF-guide.md.
 # =====================================================================
 
 [global]
@@ -26,21 +27,21 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--bc" = "periodic"
 "--ic" = "sine"
 "--source" = "none"
-"--ic-amplitude" = 0.3
-"--nu" = 0.08
+"--ic-amplitude" = 0.6
+"--nu" = 0.04
 
 "--seed" = 1234
 "--shots" = 150000
 "--metric-transpile-timeout" = 0
 
-"--q" = 8
-"--n-steps" = 400
+"--q" = 10
+"--n-steps" = 1600
 
 # ---------------------------------------------------------------------
 [cole_hopf_circuit]
 "--method" = "cole_hopf_circuit"
 "--propagator" = "qft-diagonal"
-"--bond-dim" = 8                      # headroom for peaked phi (smooth here)
+"--bond-dim" = 32                     # headroom for peaked phi
 "--phi-modes" = 8                     # low-pass shot noise before log-deriv
 
 [qlbm_circuit]
@@ -53,7 +54,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 
 [ftcs_ref]
 "--method" = "ftcs_reference"
-"--ref-points" = 800                  # finer than N=256 to stay a faithful ref
+"--ref-points" = 2000                 # finer than N=1024 to stay a faithful ref
 "--save-every" = 10                   # reference must snapshot at the cadence
 
 # ---------------------------------------------------------------------

@@ -1,10 +1,10 @@
 
 # =====================================================================
-# A-B MUTUAL-RANGE BAKEOFF :  nu = 0.02  (A=0.3, q=7)
+# A-B SHOWCASE (CH-favorable) :  nu = 0.08, A = 0.3, q=7
 # ---------------------------------------------------------------------
-# Single operating point, no swept variable.  Both methods viable here:
-# Both methods viable; QLBM tau = 0.5 + nu*256 >> 1, CH well above floor.
-# CH peakedness exp(A/2*pi*nu) ~ 10.9x at this point.
+# CH-favorable showcase, INSIDE the mutual range.  Very smooth phi
+# (peak ~1.8x): CH exact-via-transform should beat QLBM's ~0.11
+# O(Omega^2)/step scheme floor.  QLBM tau=21, fully stable.
 # See docs/AB-BAKEOFF-guide.md.  Knobs are best-vs-best (each method at
 # full strength); the postproc legend prints them per method.
 # =====================================================================
@@ -20,14 +20,14 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 
 "--cfl" = 0.1
 "--evolution-mode" = "measure_reprepare"
-"--segment-size" = 10
+"--segment-size" = 5
 "--save-every" = 10
 
 "--bc" = "periodic"
 "--ic" = "sine"
 "--source" = "none"
 "--ic-amplitude" = 0.3
-"--nu" = 0.02
+"--nu" = 0.08
 
 "--seed" = 1234
 "--shots" = 150000

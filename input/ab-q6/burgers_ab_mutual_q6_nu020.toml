@@ -20,7 +20,7 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 
 "--cfl" = 0.1
 "--evolution-mode" = "measure_reprepare"
-"--segment-size" = 10
+"--segment-size" = 5
 "--save-every" = 10
 
 "--bc" = "periodic"
