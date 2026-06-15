@@ -368,6 +368,10 @@ def main() -> int:
     p.add_argument("--segments", type=int, default=None,
                    help="Override segment count (debug); default = case "
                         "n_steps/segment_size.")
+    p.add_argument("--segment-size", type=int, default=None,
+                   help="Override time-steps per segment/circuit (debug); "
+                        "default = case segment_size. Smaller = shallower "
+                        "per-segment circuits but more serial jobs.")
     p.add_argument("--optimization-level", type=int, default=None,
                    help="Default 3 for hardware, 1 for sim.")
     p.add_argument("--dry-run", action="store_true",
@@ -417,6 +421,8 @@ def main() -> int:
         args.optimization_level = 3 if sampler_path else 1
 
     case = dict(CASES[args.case])
+    if args.segment_size is not None:
+        case["segment_size"] = args.segment_size
     if args.segments is not None:
         case["n_steps"] = args.segments * case["segment_size"]
     n_segments = case["n_steps"] // case["segment_size"]
