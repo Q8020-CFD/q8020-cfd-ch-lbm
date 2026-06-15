@@ -1,0 +1,40 @@
+# =====================================================================
+# CH HARDWARE RUNNER : single-circuit "stunt" demo (q3)
+# ---------------------------------------------------------------------
+# Drives burgers_ch_hw_runner.py with the `smooth_stunt` case: q=3,
+# nu=0.08, A=0.3, folded into ONE exact time-step (cfl=3.0 -> dt = full
+# time T).  The qft-diagonal propagator's damping is the closed-form heat
+# solution, so one big step == the 30-step march with zero Trotter error
+# (verified: analytic 2.8e-16; sim fold-vs-multi ~0.04; sim rel-L2 0.065).
+#
+# One segment => ONE QPU circuit, one post-selection (p_success ~0.97),
+# no measure-reprepare rounds.  On ibm_kingston: depth ~295, 97 2q gates,
+# 5 qubits -> well inside coherence, unlike the q4 6-segment run
+# (depth 4633, rel-L2 1.71).  See [[q8020-segment-size-tradeoff]].
+#
+# Run order (credential-free first):
+#   1. sim dry-run : q8020-sweep <this> --set target=sim --dry-run
+#   2. hw  dry-run : q8020-sweep <this> --set target=hardware --dry-run
+#   3. the real run: q8020-sweep <this>          (target=hardware below)
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_ch_hw_runner.py"
+
+"--case" = "smooth_stunt"
+"--target" = "hardware"
+"--backend-name" = "ibm_kingston"
+"--no-session" = true
+"--shots" = 150000
+"--seed" = 1234
+
+# Render the evolution movie after the run (quantum vs ftcs_reference).
+_case_postproc = [
+  "./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --reference ftcs_reference"
+]
+
+[run]
+# Single case group; the sweeper injects --outdir and runs the script.
