@@ -250,13 +250,54 @@ def write_metadata(outdir: Path, case_name: str, case: dict[str, Any],
         except Exception as e:
             print(f"[ch_hw] backend meta skipped: {e}", file=sys.stderr)
 
+    # Per-segment job_ids + post-selection for audit/reconstruction.
+    # Prefer the every-segment list the solver stamps on the final snapshot
+    # (one entry per QPU job); fall back to the snapshot-only metrics for
+    # older solver output.  Without this the non-snapshot segments' jobs are
+    # invisible here even though they ran and were billed -- which also makes
+    # total_quantum_seconds undercount by the dropped segments.
+    seg_source = metrics
+    if metrics:
+        full = metrics[-1].get("segments_full")
+        if full:
+            seg_source = full
+    seg_records = []
+    total_quantum_seconds = 0.0
+    any_quantum_seconds = False
+    for m in seg_source:
+        ex = m.get("execute", {})
+        qs = ex.get("quantum_seconds")
+        if qs is not None:
+            any_quantum_seconds = True
+            total_quantum_seconds += float(qs)
+        seg_records.append({
+            "segment_idx": m.get("segment_idx"),
+            "step": m.get("step"),
+            "p_success": m.get("p_success"),
+            "n_kept": m.get("n_kept"),
+            "circuit_depth": m.get("circuit_depth"),
+            "gate_counts": m.get("gate_counts"),
+            # Honesty labels: hardware-cost stats are exact only for the
+            # segment that produced them; reused as an estimate otherwise
+            # (None/False when skipped under a held Session -- see dry-run).
+            "circuit_metrics_available": m.get("circuit_metrics_available"),
+            "circuit_metrics_from_segment": m.get(
+                "circuit_metrics_from_segment"),
+            "circuit_metrics_exact": m.get("circuit_metrics_exact"),
+            "job_id": ex.get("job_id"),
+            "execution_time_s": m.get("execution_time_s"),
+            # Billed QPU usage (real hardware only; None on sim/local).
+            "quantum_seconds": qs,
+            "job_metrics": json_safe(ex.get("job_metrics")),
+        })
+
     # Real-hardware only: harvest the per-segment execution-time metrics +
     # calibration snapshot via the qutil builtin (get_job_result), keyed on
-    # the job_ids we already captured.  This is the authoritative billed-
-    # usage + calibration record (calibration can drift across the serial
-    # chain's queue waits), and it uses the purpose-built async helper
-    # rather than re-deriving anything here.  Best-effort: never fail the
-    # run on a harvest hiccup.
+    # the job_ids captured in seg_records above.  This is the authoritative
+    # billed-usage + calibration record (calibration can drift across the
+    # serial chain's queue waits), and it uses the purpose-built async helper
+    # rather than re-deriving anything here.  Best-effort: never fail the run
+    # on a harvest hiccup.
     if args.target == "hardware":
         try:
             from q8020_cfd_qutil.job import get_job_result
@@ -284,36 +325,6 @@ def write_metadata(outdir: Path, case_name: str, case: dict[str, Any],
         except Exception as e:
             print(f"[ch_hw] job harvest skipped: {e}", file=sys.stderr)
 
-    # Per-segment job_ids + post-selection for audit/reconstruction.
-    seg_records = []
-    total_quantum_seconds = 0.0
-    any_quantum_seconds = False
-    for m in metrics:
-        ex = m.get("execute", {})
-        qs = ex.get("quantum_seconds")
-        if qs is not None:
-            any_quantum_seconds = True
-            total_quantum_seconds += float(qs)
-        seg_records.append({
-            "segment_idx": m.get("segment_idx"),
-            "step": m.get("step"),
-            "p_success": m.get("p_success"),
-            "n_kept": m.get("n_kept"),
-            "circuit_depth": m.get("circuit_depth"),
-            "gate_counts": m.get("gate_counts"),
-            # Honesty labels: hardware-cost stats are exact only for the
-            # segment that produced them; reused as an estimate otherwise
-            # (None/False when skipped under a held Session -- see dry-run).
-            "circuit_metrics_available": m.get("circuit_metrics_available"),
-            "circuit_metrics_from_segment": m.get(
-                "circuit_metrics_from_segment"),
-            "circuit_metrics_exact": m.get("circuit_metrics_exact"),
-            "job_id": ex.get("job_id"),
-            "execution_time_s": m.get("execution_time_s"),
-            # Billed QPU usage (real hardware only; None on sim/local).
-            "quantum_seconds": qs,
-            "job_metrics": json_safe(ex.get("job_metrics")),
-        })
     write_results(outdir, {
         "u_final_method": u_final.tolist(),
         "segments": seg_records,

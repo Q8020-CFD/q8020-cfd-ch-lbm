@@ -1220,6 +1220,12 @@ def _run_shots_measure_reprepare(
     psi_current, init_norm = normalize_state(psi0)
     cumulative_norm = init_norm * phi_norm
     snapshots: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
+    # Per-segment audit trail, recorded for EVERY segment (not just the
+    # snapshot steps).  Under measure-reprepare each segment is a separate
+    # QPU job; gating the record on snap_steps silently drops the job_id /
+    # billed-usage provenance of the non-snapshot segments.  Stamped onto
+    # the last snapshot's metrics below so the return signature is unchanged.
+    seg_audit: list[dict[str, Any]] = []
     # Cache for out-of-process hardware-cost stats.  Each segment's prep
     # block differs (rebuilt from that segment's measured amplitudes), so
     # the cached stats are exact only for the segment that produced them;
@@ -1363,6 +1369,33 @@ def _run_shots_measure_reprepare(
             file=sys.stderr, flush=True,
         )
 
+        # Audit record for THIS segment (every segment, snapshot or not).
+        # Mirrors the fields the runner reads off each metrics entry so the
+        # full 6-job list can be written/harvested uniformly.
+        seg_rec: dict[str, Any] = {
+            "segment_idx": segment_idx,
+            "step": step_at_end,
+            "is_snapshot": step_at_end in snap_steps,
+            "shots": shots,
+            "n_kept": n_kept,
+            "p_success": p_success,
+            "cumulative_norm": cumulative_norm,
+            "execution_time_s": exec_info.get("wall_time", 0.0),
+            "execute": exec_info,
+        }
+        if skip_stats is not None and skip_stats.get("available"):
+            seg_rec["circuit_depth"] = skip_stats["depth"]
+            seg_rec["gate_counts"] = skip_stats["gate_counts"]
+            seg_rec["n_qubits"] = skip_stats["num_qubits"]
+            seg_rec["circuit_metrics_available"] = True
+            seg_rec["circuit_metrics_from_segment"] = metric_stats_from_segment
+            seg_rec["circuit_metrics_exact"] = (
+                metric_stats_from_segment == segment_idx
+            )
+        else:
+            seg_rec["circuit_metrics_available"] = False
+        seg_audit.append(seg_rec)
+
         if step_at_end in snap_steps:
             # Scale for output: phi = psi * cumulative_norm
             phi_out = psi_current * cumulative_norm
@@ -1424,6 +1457,11 @@ def _run_shots_measure_reprepare(
     # can only show those two and the classical remainder collapses to zero.
     if snap_steps:
         snapshots[snap_steps[-1]][1]["method_wall_time_s"] = total_elapsed
+        # Authoritative every-segment list (all QPU jobs), carried on the
+        # final snapshot so callers get complete job provenance without a
+        # return-signature change.  seg_audit holds independent dicts (not
+        # the snapshot met objects), so no self-referential cycle is created.
+        snapshots[snap_steps[-1]][1]["segments_full"] = seg_audit
     return [snapshots[s] for s in snap_steps]
 
 
