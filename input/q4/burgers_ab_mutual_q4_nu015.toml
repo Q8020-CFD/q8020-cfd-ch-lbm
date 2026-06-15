@@ -1,0 +1,66 @@
+
+# =====================================================================
+# A-B MUTUAL-RANGE BAKEOFF :  nu = 0.015  (A=0.3, q=4)
+# ---------------------------------------------------------------------
+# HARDWARE-FEASIBILITY PROBE (q=4, N=16).  Small-grid copy of the q6
+# A-B bakeoff set, used to assess whether the circuits shrink into a
+# range runnable on real quantum hardware (qubit count, depth, 2q gates).
+# Single operating point, no swept variable.  Mutual range at q6; at q4
+# (N=16) QLBM tau collapses toward 0.5 -- this probes that small-grid edge.
+# Physics is unchanged from the q6 counterpart; CH peakedness
+# exp(A/2*pi*nu) ~ 24.1x (grid-independent).  QLBM tau = 0.5 + nu*N
+# = 0.74 at N=16 (vs 1.46 at q6/N=64) -- noticeably smaller, so
+# QLBM accuracy is expected to differ from q6.
+# Knobs are best-vs-best (each method at full strength).
+# See docs/AB-BAKEOFF-guide.md.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 5
+"--save-every" = 10
+
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--nu" = 0.015
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 4
+"--n-steps" = 30                     # scaled from q6 (xN/64); /10-aligned
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8                      # >= full MPS rank at N=16 (clamps to full)
+"--phi-modes" = 8                     # = N/2 (Nyquist) at N=16: keeps full spectrum
+
+[qlbm_circuit]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = 3                   # qc=3 convergent (grid-independent reg width)
+"--qalb-collision-trotter-reps" = 0   # dense exact collision = best L2
+
+[lbm_classical]
+"--method" = "lbm"
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800                  # finer than N=16 to stay a faithful ref
+"--save-every" = 10                   # reference must snapshot at the cadence
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --anchor qlbm_circuit --hide shift --no-ic"]
