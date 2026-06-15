@@ -467,12 +467,17 @@ def main() -> int:
     u0, x, dt, nu = build_inputs(case)
     dx = x[1] - x[0]
 
-    # A held Session is mandatory on real hardware (N serial segments must
-    # share one queue slot); the solver enforces this too, but fail early
-    # here with a clear message before any backend work.
+    # A held Session lets the N serial segments share one queue slot, which
+    # matters on a paid device. It is NOT a correctness requirement: the
+    # measure-reprepare loop re-prepares each segment classically from the
+    # prior segment's counts, so job mode (N separate queued jobs) yields
+    # identical results -- just N queue waits. The IBM open (free) plan does
+    # not permit Sessions, so --no-session is the supported way to run there.
     if args.target == "hardware" and args.no_session:
-        p.error("--no-session is not allowed with --target hardware: the "
-                "serial segments would each open a separate queued job.")
+        print("[ch_hw] WARNING: --no-session on hardware: the 6 serial "
+              "segments will each open a separate queued job (required on "
+              "the open plan; slower than a held Session on paid plans).",
+              file=sys.stderr, flush=True)
 
     t0 = time.time()
     session_cm = open_session(backend, args.target, not args.no_session)

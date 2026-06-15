@@ -1189,16 +1189,20 @@ def _run_shots_measure_reprepare(
                 "segmenting deferred to v2 (set allow_hardware=True to "
                 "opt in)"
             )
-        # Opting into hardware is a validated mode, not a bare flag flip:
-        # the N segments are serial QPU submissions, so a held Session is
-        # required to avoid N independent queue waits on a paid device.
+        # A held Session lets the N serial QPU submissions share one queue
+        # slot, avoiding N independent queue waits on a paid device. It is an
+        # optimization, not a correctness requirement: each segment is
+        # re-prepared classically from the prior segment's measured counts,
+        # so session-less job mode yields identical results. The IBM open
+        # (free) plan forbids Sessions, so session=None is the supported way
+        # to run hardware there -- warn rather than block.
         if session is None:
-            raise ValueError(
-                "allow_hardware=True requires a held Session "
-                "(session=...); without it each of the "
-                f"{max(snap_steps) // segment_size} serial segments opens "
-                "a separate queued job. Pass --no-session only with a "
-                "sim/local target."
+            import sys as _sys
+            print(
+                "[ch] WARNING: allow_hardware=True without a held Session: "
+                f"the {max(snap_steps) // segment_size} serial segments will "
+                "each open a separate queued job (required on the open plan).",
+                file=_sys.stderr, flush=True,
             )
 
     from q8020_cfd_qutil.circuit import (
