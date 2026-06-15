@@ -57,6 +57,20 @@ CASES: dict[str, dict[str, Any]] = {
         "bc": "periodic", "propagator": "qft-diagonal",
         "bond_dim": 8, "phi_modes": 8,
     },
+    # Single-circuit "stunt" demo of the smooth case.  The qft-diagonal
+    # heat propagator uses EXACT damping angles theta(k)=arccos(exp(nu*lam*dt)),
+    # which is the closed-form heat solution -- so one big step (dt = full T)
+    # equals the 30-step march with zero Trotter error.  cfl=3.0 at q=3
+    # (dx=1/8) gives dt = 0.375 = the same total time as smooth's 30 steps at
+    # q=3.  One segment => one QPU circuit, one post-selection, no
+    # measure-reprepare rounds.  Shallow enough (depth ~313, 97 2q gates) to
+    # survive Kingston coherence.  See [[q8020-segment-size-tradeoff]].
+    "smooth_stunt": {
+        "q": 3, "nu": 0.08, "ic_amplitude": 0.3, "cfl": 3.0,
+        "n_steps": 1, "segment_size": 1, "save_every": 1,
+        "bc": "periodic", "propagator": "qft-diagonal",
+        "bond_dim": 2, "phi_modes": 8,
+    },
 }
 
 
@@ -158,8 +172,24 @@ def dry_run_transpile(case: dict[str, Any], backend: Any,
 
 def compute_reference(u0: np.ndarray, x: np.ndarray, nu: float,
                       dt: float, n_steps: int, bc: str) -> list[np.ndarray]:
-    """FTCS classical reference, per-step [u0..u_{n_steps}] on the grid."""
-    return solve_burgers(u0, x, nu, dt, n_steps, bc=bc)
+    """FTCS classical reference, per-step [u0..u_{n_steps}] on the grid.
+
+    FTCS diffusion is only stable for nu*dt/dx^2 <= 0.5.  The quantum
+    propagator carries no such limit (its damping is the exact closed-form
+    heat solution), so configs that fold many time-steps into one big dt
+    (the single-circuit "stunt") would otherwise be scored against a
+    BLOWN-UP classical reference.  Substep internally to a stable dt while
+    keeping the returned cadence (one snapshot per macro step k*dt), so the
+    reference is valid regardless of the circuit's macro timestep.  Already-
+    stable runs get M=1 and identical behaviour to before.
+    """
+    dx = float(x[1] - x[0])
+    dt_stable = 0.4 * dx * dx / nu if nu > 0 else dt
+    m = max(1, int(np.ceil(dt / dt_stable))) if dt > dt_stable else 1
+    if m == 1:
+        return solve_burgers(u0, x, nu, dt, n_steps, bc=bc)
+    fine = solve_burgers(u0, x, nu, dt / m, n_steps * m, bc=bc)
+    return fine[::m]          # sample back to the macro-step cadence
 
 
 def write_movie_series(parent: Path, method: str, x: np.ndarray,
