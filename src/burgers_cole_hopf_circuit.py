@@ -1060,6 +1060,82 @@ def reconstruct_phi_from_counts(
 # ── Measure-and-reprepare (segmented) shots driver ─────────────────────────────────────────────
 
 
+def build_segment_circuit(
+    psi_current: np.ndarray,
+    q: int,
+    nu: float,
+    dt: float,
+    segment_size: int,
+    L_box: float,
+    bc: str,
+    propagator: str,
+    bond_dim: int | None = None,
+    encoding: str = "binary",
+    use_mps_prep: bool = True,
+    source_fn=None,
+    x: np.ndarray | None = None,
+    taylor_order: int = 4,
+    t_start: float = 0.0,
+) -> tuple[QuantumCircuit, int, int, int]:
+    """Build one measure-reprepare segment circuit (prep + segment_size
+    Trotter steps), composed and ready to transpile.
+
+    Single source of truth for segment construction: used by the
+    measure-reprepare loop AND the F12 hardware-runner dry-run so the
+    reported CX/depth always matches what actually executes.
+
+    Returns (raw_qc, total_q, n_bond, n_heat_anc).
+    """
+    # 1. Prep circuit from current amplitudes
+    if use_mps_prep:
+        from burgers_mps import classical_to_mps, mps_to_circuit
+        tensors = classical_to_mps(
+            psi_current, bond_dim=bond_dim, canonical="right",
+        )
+        prep_qc = mps_to_circuit(tensors)
+        n_bond = prep_qc.num_qubits - q
+    else:
+        prep_qc = QuantumCircuit(q, name="initialize_prep")
+        prep_qc.initialize(psi_current.tolist(), range(q))
+        n_bond = 0
+
+    # 2. segment_size-step evolution circuit
+    T_segment = dt * segment_size
+    if propagator == "qft-diagonal":
+        full_qc = heat_qft_full_circuit(
+            q, nu, T_segment, segment_size, L_box, bc=bc,
+        )
+    elif propagator == "lcu":
+        full_qc = heat_lcu_full_circuit(
+            q, nu, T_segment, segment_size, L_box, bc=bc,
+            taylor_order=taylor_order,
+            source_fn=source_fn, x=x,
+            t_start=t_start,
+        )
+    else:
+        full_qc = heat_dense_block_full_circuit(
+            q, nu, T_segment, segment_size, L_box, bc=bc,
+            encoding=encoding,
+            source_fn=source_fn, x=x,
+            t_start=t_start,
+        )
+
+    n_heat_anc = full_qc.num_qubits - q
+    total_q = q + n_bond + n_heat_anc
+    heat_qubit_map = list(range(q)) + list(
+        range(q + n_bond, q + n_bond + n_heat_anc),
+    )
+
+    # 3. Compose
+    init_qc = QuantumCircuit(total_q)
+    init_qc.compose(prep_qc, qubits=list(range(q + n_bond)), inplace=True)
+    raw_qc = init_qc.compose(full_qc, qubits=heat_qubit_map)
+    # Compose drops source metadata; carry forward (LCU lambda).
+    if full_qc.metadata:
+        raw_qc.metadata = dict(full_qc.metadata)
+    return raw_qc, total_q, n_bond, n_heat_anc
+
+
 def _run_shots_measure_reprepare(
     psi0: np.ndarray,
     q: int,
@@ -1084,6 +1160,9 @@ def _run_shots_measure_reprepare(
     taylor_order: int = 4,
     use_mps_prep: bool = True,
     metric_transpile_timeout: float = 60.0,
+    allow_hardware: bool = False,
+    session: Any = None,
+    sampler_options: dict | None = None,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Measure-and-reprepare (segmented) evolution: K segments of segment_size steps each.
 
@@ -1094,12 +1173,33 @@ def _run_shots_measure_reprepare(
     use_mps_prep: True (default) uses Ran 2020 MPS-to-circuit prep
         (O(q*chi^2) gates).  False falls back to QuantumCircuit.
         initialize (O(2^q) gates) for comparison.
+
+    allow_hardware (default False): the segmented loop is sim-only by
+        default.  The F12 hardware runner opts in by passing True (with
+        a real IBM backend + held Session); existing callers leave it
+        False and keep the original guard behavior.
+    session / sampler_options (default None): forwarded verbatim to
+        execute_circuit_counts so each serial segment's SamplerV2 is
+        session-bound and mitigated (TREX / dynamical decoupling).
     """
     if backend_type == "hardware":
-        raise NotImplementedError(
-            "segmented evolution v1: sim only; hardware "
-            "segmenting deferred to v2"
-        )
+        if not allow_hardware:
+            raise NotImplementedError(
+                "segmented evolution v1: sim only; hardware "
+                "segmenting deferred to v2 (set allow_hardware=True to "
+                "opt in)"
+            )
+        # Opting into hardware is a validated mode, not a bare flag flip:
+        # the N segments are serial QPU submissions, so a held Session is
+        # required to avoid N independent queue waits on a paid device.
+        if session is None:
+            raise ValueError(
+                "allow_hardware=True requires a held Session "
+                "(session=...); without it each of the "
+                f"{max(snap_steps) // segment_size} serial segments opens "
+                "a separate queued job. Pass --no-session only with a "
+                "sim/local target."
+            )
 
     from q8020_cfd_qutil.circuit import (
         transpile_circuit,
@@ -1116,9 +1216,17 @@ def _run_shots_measure_reprepare(
     psi_current, init_norm = normalize_state(psi0)
     cumulative_norm = init_norm * phi_norm
     snapshots: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
-    # Cache for out-of-process hardware-cost stats on the skip-transpile
-    # (Aer+LCU) path; unforced segments are identical so we compute once.
+    # Cache for out-of-process hardware-cost stats.  Each segment's prep
+    # block differs (rebuilt from that segment's measured amplitudes), so
+    # the cached stats are exact only for the segment that produced them;
+    # later segments reuse them as an estimate and are labelled as such
+    # (metric_stats_from_segment).  When a Session is held (hardware) the
+    # inline metric transpile is skipped entirely -- it would burn QPU
+    # reservation wall-clock on a classical decomposition, and the F12
+    # dry-run already reports the authoritative segment CX/depth.
     metric_stats_cache = None
+    metric_stats_from_segment: int | None = None
+    skip_metric_transpile = session is not None
 
     print(
         f"[_run_shots_measure_reprepare] n_segments={n_segments} "
@@ -1132,57 +1240,14 @@ def _run_shots_measure_reprepare(
         global_step_start = segment_idx * segment_size
         t_start_segment = global_step_start * dt
 
-        # 1. Build prep circuit from current amplitudes
-        if use_mps_prep:
-            tensors = classical_to_mps(
-                psi_current, bond_dim=bond_dim, canonical="right",
-            )
-            prep_qc = mps_to_circuit(tensors)
-            n_bond = prep_qc.num_qubits - q
-        else:
-            prep_qc = QuantumCircuit(q, name="initialize_prep")
-            prep_qc.initialize(psi_current.tolist(), range(q))
-            n_bond = 0
-
-        # 2. Build segment_size-step evolution circuit
-        T_segment = dt * segment_size
-        if propagator == "qft-diagonal":
-            full_qc = heat_qft_full_circuit(
-                q, nu, T_segment, segment_size, L_box, bc=bc,
-            )
-        elif propagator == "lcu":
-            full_qc = heat_lcu_full_circuit(
-                q, nu, T_segment, segment_size, L_box, bc=bc,
-                taylor_order=taylor_order,
-                source_fn=source_fn, x=x,
-                t_start=t_start_segment,
-            )
-        else:
-            full_qc = heat_dense_block_full_circuit(
-                q, nu, T_segment, segment_size, L_box, bc=bc,
-                encoding=encoding,
-                source_fn=source_fn, x=x,
-                t_start=t_start_segment,
-            )
-
-        n_heat_anc = full_qc.num_qubits - q
-        total_q = q + n_bond + n_heat_anc
-        heat_qubit_map = list(range(q)) + list(
-            range(q + n_bond, q + n_bond + n_heat_anc),
+        # 1-3. Build prep + evolution + compose (shared with the F12
+        # dry-run so reported CX/depth matches what actually runs).
+        raw_qc, total_q, n_bond, n_heat_anc = build_segment_circuit(
+            psi_current, q, nu, dt, segment_size, L_box, bc, propagator,
+            bond_dim=bond_dim, encoding=encoding, use_mps_prep=use_mps_prep,
+            source_fn=source_fn, x=x, taylor_order=taylor_order,
+            t_start=t_start_segment,
         )
-
-        # 3. Compose
-        init_qc = QuantumCircuit(total_q)
-        init_qc.compose(
-            prep_qc, qubits=list(range(q + n_bond)),
-            inplace=True,
-        )
-        raw_qc = init_qc.compose(
-            full_qc, qubits=heat_qubit_map,
-        )
-        # Compose drops source metadata; carry forward (LCU lambda).
-        if full_qc.metadata:
-            raw_qc.metadata = dict(full_qc.metadata)
         # Construction wall time for this segment (prep + propagator
         # build + compose), measured from the segment start.
         construct_t = time.time() - t_segment
@@ -1233,22 +1298,30 @@ def _run_shots_measure_reprepare(
         # Run out-of-process so a qs_decomposition segfault/hang degrades
         # gracefully instead of killing the run.  Identical segments
         # (source_fn is None) are computed once and cached.
-        if metric_stats_cache is None or source_fn is not None:
-            from q8020_cfd_qutil.circuit import (
-                DEFAULT_METRIC_BASIS,
-                safe_circuit_stats_in_basis,
-            )
-            _t_m = time.time()
-            metric_stats_cache = safe_circuit_stats_in_basis(
-                raw_qc, DEFAULT_METRIC_BASIS,
-                optimization_level=optimization_level,
-                seed_transpiler=seed,
-                timeout=metric_transpile_timeout, try_decompose=False,
-            )
-            metric_t = time.time() - _t_m
-        skip_stats = metric_stats_cache
+        if skip_metric_transpile:
+            # Held Session: never run a classical decomposition on QPU
+            # reservation time.  Authoritative CX/depth comes from the
+            # F12 dry-run pre-flight (same build_segment_circuit).
+            skip_stats = None
+        else:
+            if metric_stats_cache is None or source_fn is not None:
+                from q8020_cfd_qutil.circuit import (
+                    DEFAULT_METRIC_BASIS,
+                    safe_circuit_stats_in_basis,
+                )
+                _t_m = time.time()
+                metric_stats_cache = safe_circuit_stats_in_basis(
+                    raw_qc, DEFAULT_METRIC_BASIS,
+                    optimization_level=optimization_level,
+                    seed_transpiler=seed,
+                    timeout=metric_transpile_timeout, try_decompose=False,
+                )
+                metric_stats_from_segment = segment_idx
+                metric_t = time.time() - _t_m
+            skip_stats = metric_stats_cache
         counts, exec_info = execute_circuit_counts(
             qc_t, backend, shots=shots, seed=seed,
+            session=session, sampler_options=sampler_options,
         )
 
         # 5. Post-select and reconstruct
@@ -1316,9 +1389,20 @@ def _run_shots_measure_reprepare(
                 met["gate_counts"] = skip_stats["gate_counts"]
                 met["n_qubits"] = skip_stats["num_qubits"]
                 met["circuit_metrics_available"] = True
+                # Exact only for the segment that produced the cache;
+                # other segments reuse it as an estimate (prep differs).
+                met["circuit_metrics_from_segment"] = metric_stats_from_segment
+                met["circuit_metrics_exact"] = (
+                    metric_stats_from_segment == segment_idx
+                )
             elif skip_stats is not None:
                 met["circuit_metrics_available"] = False
                 met["circuit_metrics_reason"] = skip_stats.get("reason")
+            elif skip_metric_transpile:
+                met["circuit_metrics_available"] = False
+                met["circuit_metrics_reason"] = (
+                    "skipped on held Session; see dry-run pre-flight"
+                )
             if raw_qc.metadata and "lcu_lambda" in raw_qc.metadata:
                 met["lcu_lambda"] = raw_qc.metadata["lcu_lambda"]
             snapshots[step_at_end] = (phi_out, met)
@@ -2016,6 +2100,9 @@ def run_cole_hopf_circuit_simulation(
     use_mps_prep: bool = True,
     readout: str = "direct",
     metric_transpile_timeout: float = 60.0,
+    allow_hardware: bool = False,
+    session: Any = None,
+    sampler_options: dict | None = None,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
 
@@ -2180,6 +2267,9 @@ def run_cole_hopf_circuit_simulation(
                 taylor_order=taylor_order,
                 use_mps_prep=use_mps_prep,
                 metric_transpile_timeout=metric_transpile_timeout,
+                allow_hardware=allow_hardware,
+                session=session,
+                sampler_options=sampler_options,
             )
         else:
             batch_results = _run_shots_batch(
