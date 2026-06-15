@@ -731,12 +731,21 @@ def main() -> None:
     if args.postproc_json and Path(args.postproc_json).is_file():
         with open(args.postproc_json, encoding='utf-8') as f:
             pp = json.load(f)
-        run_dir = Path(pp['run_dir'])
-        all_cases = _load_cases(run_dir)
-        outfile = args.outfile or str(
-            run_dir / 'method_compare.gif',
-        )
-        run_label = run_dir.name
+        # Group-postproc JSON carries 'run_dir'; case-postproc JSON carries
+        # 'case_dir'.  For a case-postproc run the comparison series live in
+        # the runner-written <case_dir>/method_compare subdir.
+        if pp.get('run_dir'):
+            base = Path(pp['run_dir'])
+            gif_dir = base
+        else:
+            base = Path(pp['case_dir'])
+            gif_dir = base
+            mc = base / 'method_compare'
+            if mc.is_dir():
+                base = mc
+        all_cases = _load_cases(base)
+        outfile = args.outfile or str(gif_dir / 'method_compare.gif')
+        run_label = gif_dir.name
     elif args.sweep_dir:
         sd = args.sweep_dir.expanduser().resolve()
         all_cases = _load_cases(sd)

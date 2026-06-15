@@ -31,10 +31,10 @@ _script = "python ./q8020-mps-burgers/src/burgers_ch_hw_runner.py"
 
 # Render the evolution movie after the run.  The runner writes the quantum
 # (cole_hopf_circuit) and ftcs_reference series as two case dirs under
-# <case_dir>/method_compare; the postproc JSON carries case_dir, so we read
-# it and point plot_method_compare.py there via --sweep-dir.
+# <case_dir>/method_compare; plot_method_compare.py reads case_dir from the
+# postproc JSON the sweeper appends as the final arg.
 _case_postproc = [
-  "./.venv/bin/python -c \"import json,sys,subprocess; d=json.load(open(sys.argv[1])); cd=d['case_dir']; subprocess.run(['./.venv/bin/python','./q8020-mps-burgers/postproc/plot_method_compare.py','--sweep-dir',cd+'/method_compare','--reference','ftcs_reference','--outfile',cd+'/method_compare.gif'],check=True)\""
+  "./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --reference ftcs_reference"
 ]
 
 [run]
