@@ -1163,6 +1163,7 @@ def _run_shots_measure_reprepare(
     allow_hardware: bool = False,
     session: Any = None,
     sampler_options: dict | None = None,
+    initial_layout: list[int] | None = None,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Measure-and-reprepare (segmented) evolution: K segments of segment_size steps each.
 
@@ -1299,6 +1300,7 @@ def _run_shots_measure_reprepare(
                 raw_qc, backend,
                 optimization_level=optimization_level,
                 seed_transpiler=seed,
+                initial_layout=initial_layout,
             )
         # Hardware-cost stats: decompose raw_qc to DEFAULT_METRIC_BASIS so
         # CH reports honest cx-depth/gate counts comparable to QLBM,
@@ -2145,6 +2147,7 @@ def run_cole_hopf_circuit_simulation(
     allow_hardware: bool = False,
     session: Any = None,
     sampler_options: dict | None = None,
+    initial_layout: list[int] | None = None,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
 
@@ -2312,6 +2315,7 @@ def run_cole_hopf_circuit_simulation(
                 allow_hardware=allow_hardware,
                 session=session,
                 sampler_options=sampler_options,
+                initial_layout=initial_layout,
             )
         else:
             batch_results = _run_shots_batch(

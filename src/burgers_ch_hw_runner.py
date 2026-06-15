@@ -116,7 +116,8 @@ def open_session(backend: Any, target: str, use_session: bool):
 
 
 def dry_run_transpile(case: dict[str, Any], backend: Any,
-                      optimization_level: int, seed: int) -> dict[str, Any]:
+                      optimization_level: int, seed: int,
+                      initial_layout: list[int] | None = None) -> dict[str, Any]:
     """Build the first segment's circuit (via the SAME build_segment_circuit
     the solver loop uses) and transpile it against the resolved backend to
     report the true (heavy-hex) CX/depth.  No shots.
@@ -156,7 +157,8 @@ def dry_run_transpile(case: dict[str, Any], backend: Any,
 
     qc_t, info = transpile_circuit(raw_qc, backend,
                                    optimization_level=optimization_level,
-                                   seed_transpiler=seed)
+                                   seed_transpiler=seed,
+                                   initial_layout=initial_layout)
     ops = qc_t.count_ops()
     cx = ops.get("cx", 0) + ops.get("ecr", 0) + ops.get("cz", 0)
     return {
@@ -402,6 +404,13 @@ def main() -> int:
                    help="Override time-steps per segment/circuit (debug); "
                         "default = case segment_size. Smaller = shallower "
                         "per-segment circuits but more serial jobs.")
+    p.add_argument("--initial-layout", default=None,
+                   help="Comma-separated physical qubits to pin the layout "
+                        "(virtual i -> the i-th value), e.g. '12,13,14,18,17'. "
+                        "Use to force a good-calibration chain when the "
+                        "backend Target lacks per-gate errors and the "
+                        "error-aware layout pass would otherwise pick bad "
+                        "qubits.")
     p.add_argument("--optimization-level", type=int, default=None,
                    help="Default 3 for hardware, 1 for sim.")
     p.add_argument("--dry-run", action="store_true",
@@ -423,6 +432,11 @@ def main() -> int:
     p.add_argument("--channel", default="ibm_cloud")
     p.add_argument("--instance", default=None)
     args = p.parse_args()
+
+    # Parse --initial-layout "12,13,14,..." into a list of physical qubits.
+    initial_layout = None
+    if args.initial_layout:
+        initial_layout = [int(t) for t in args.initial_layout.split(",")]
 
     # Resolve tri-state mitigation flags to bools.  Only the SamplerV2
     # paths (hardware, local) honor mitigation options; the Aer sim path
@@ -496,7 +510,7 @@ def main() -> int:
     dry = None
     if args.dry_run or sampler_path:
         dry = dry_run_transpile(case, backend, args.optimization_level,
-                                args.seed)
+                                args.seed, initial_layout=initial_layout)
         print(f"[ch_hw] transpiled: {dry['transpiled_2q_gates']} 2q gates, "
               f"depth {dry['transpiled_depth']}, {dry['segment_qubits']} "
               f"qubits x {n_segments} segments",
@@ -551,6 +565,7 @@ def main() -> int:
             segment_size=case["segment_size"], phi_modes=case["phi_modes"],
             allow_hardware=(args.target == "hardware"),
             session=session_cm, sampler_options=sampler_options,
+            initial_layout=initial_layout,
         )
 
     if session_cm is not None:
