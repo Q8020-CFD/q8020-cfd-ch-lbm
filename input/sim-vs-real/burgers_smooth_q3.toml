@@ -1,0 +1,52 @@
+# =====================================================================
+# SIM-vs-REAL : smooth movie, q=3
+# ---------------------------------------------------------------------
+# Cole-Hopf circuit smooth case vs FTCS reference at a single q.
+# Physics from the "smooth_movie" set: nu=0.08, A=0.3, cfl=0.3,
+# n_steps=6, segment_size=1, save_every=1, periodic, qft-diagonal,
+# bond_dim=8, phi_modes=8.
+#
+# One q per file (ab-qN convention): a single-q run_dir lets the movie
+# postproc compare CH vs the one FTCS reference cleanly.  A combined
+# --q sweep cannot -- plot_method_compare.py globs the whole run_dir and
+# sees one ftcs_reference per q (ambiguous).
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+
+"--nu" = 0.08
+"--cfl" = 0.3
+"--n-steps" = 6
+"--ic" = "sine"
+"--ic-amplitude" = 0.3
+"--bc" = "periodic"
+"--source" = "none"
+"--evolution-mode" = "measure_reprepare"
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 3
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--segment-size" = 1
+"--save-every" = 1
+"--bond-dim" = 8
+"--phi-modes" = 8
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800
+"--save-every" = 1
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --reference ftcs_reference --no-ic"]
