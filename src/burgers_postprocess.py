@@ -228,18 +228,21 @@ class BurgersPostProcessor(PostProcessor):
             "optimization_level": config.optimization_level,
             "seed": config.seed,
         }
-        if config.method != "shift" and x is not None:
-            from burgers_nonlinear import build_evolution_hamiltonian
-
-            g0 = (
-                self.source_fn(x, 0)
-                if self.source_fn is not None
-                else None
-            )
-            dx = float(x[1] - x[0])
-            dt = float(config.dt) if config.dt else 0.0
-            H = build_evolution_hamiltonian(u0, dx, dt, config.nu, g0)
-            analysis_data["n_pauli_terms"] = len(H)
+        # n_pauli_terms only describes the Pauli-Trotter method, which already
+        # emits it as a per-step metric from its own run (see burgers_trotter).
+        # Recomputing it here for other methods is meaningless (ftcs/lbm have no
+        # circuit; cole_hopf/qlbm build different circuits) and costs a dense
+        # 4^q-basis solve that blows up at q>=8.  Take the value from the method
+        # when it reported one; otherwise leave it null.
+        if step_metrics_npt := next(
+            (
+                m["n_pauli_terms"]
+                for m in self.step_metrics
+                if m.get("n_pauli_terms") is not None
+            ),
+            None,
+        ):
+            analysis_data["n_pauli_terms"] = step_metrics_npt
 
         step_metrics = self.step_metrics
         if step_metrics:
