@@ -1,0 +1,61 @@
+# =====================================================================
+# SIM-vs-REAL : smooth-movie q sweep - same IC as "show smooth" series, except 
+# for CFL, steps, segment size, and save every.
+# ---------------------------------------------------------------------
+# Cole-Hopf circuit smooth case, swept over q = 3,4,5,6,7.  Physics
+# from the "smooth_movie" reference set:
+#   nu=0.08, ic_amplitude=0.3, cfl=0.3, n_steps=6, segment_size=1,
+#   save_every=1, bc=periodic, propagator=qft-diagonal,
+#   bond_dim=8, phi_modes=8.
+#
+# Sweep mechanism (see Z-Keep/burgers_ab_nu_sweep.toml): list-valued
+# params expand only inside a [group], then [global] merges on top.
+# So the swept --q list lives in the group block, not [global].
+# =====================================================================
+
+[global]
+# environmental
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+
+# physics held fixed across the q sweep
+"--nu" = 0.08
+"--cfl" = 0.3
+"--n-steps" = 6
+"--ic" = "sine"
+"--ic-amplitude" = 0.3
+"--bc" = "periodic"
+"--source" = "none"
+"--evolution-mode" = "measure_reprepare"
+
+# simulator
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--segment-size" = 1
+"--save-every" = 1
+"--bond-dim" = 8
+"--phi-modes" = 8
+"--q" = [3, 4, 5, 6, 7]
+
+# Classical reference: the error baseline + reference curve the movie
+# postproc draws against (NOT a method line).  Required by
+# plot_method_compare.py --reference; must be swept over the same q and
+# snapshot at the CH cadence (save_every=1) or it resamples stale frames.
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800                 # finer than N=2^q to stay a faithful ref
+"--save-every" = 1
+"--q" = [3, 4, 5, 6, 7]
+
+# ---------------------------------------------------------------------
+# Per-q movie: animated GIF overlaying CH vs the FTCS reference, one per q.
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --reference ftcs_reference --no-ic"]
