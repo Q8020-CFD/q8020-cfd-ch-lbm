@@ -1,0 +1,80 @@
+# =====================================================================
+# SIM-vs-REAL : smooth movie, q=10  (long, high-shot variant)
+# ---------------------------------------------------------------------
+# Same physics/circuit as burgers_smooth_q10_nice.toml (2,000,000 shots,
+# bond_dim=32, ref_points=2000), but evolved much longer:
+#   n_steps 6 -> 100  (physical time ~0.0018 -> ~0.029, ~17x).
+#
+# The "smooth_movie" set uses n_steps=6 for a quick glance; this variant
+# is for watching the smooth profile actually evolve at q10.
+#
+# segment_size=5 (not 1): the QFT-diagonal heat propagator is EXACT and
+# time-additive (theta(k)=arccos(exp(nu*lambda_k*dt)), commuting diagonal
+# layers), so bundling 5 steps into one segment adds zero physics error.
+# What segment_size controls is how often we measure-and-reprepare -- the
+# only lossy step (postselection + sampling + MPS re-prep).  size=1 would
+# re-prep 100 times and compound that loss; size=5 re-preps 20 times
+# (~5x less accumulated loss) and runs ~5x cheaper.  Trade-off: snapshots
+# are taken only at segment boundaries, so the movie has 20 frames (every
+# 5 steps) rather than 100.  2M shots (~1953/point, q6-level statistics)
+# keep each re-prep clean.
+#
+# Runtime: the q10 cost is dominated by per-step circuit/statevector
+# work (sampling is nearly free -- the 150k vs 2M runs were both ~28s
+# at n_steps=6).  With 20 segments of 5 exact steps, expect a few min.
+#
+# One q per file (ab-qN convention): a single-q run_dir lets the movie
+# postproc compare CH vs the one FTCS reference cleanly.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+
+# At q10 the q-grid diffusion number D = nu*dt/dx^2 ~ 24.6 (>> 0.5), so the
+# INLINE per-case classical comparison (single-step Euler, solve_burgers) is
+# unconditionally unstable and NaNs by ~step 10 -- this poisoned final_error
+# / max_error / errors_by_step in the first long run.  The ftcs_reference
+# METHOD case is unaffected (it substeps internally, sub~394, to stay stable)
+# and remains the movie's reference curve.  Disable the redundant inline
+# comparison the way the working frontier/ab-qN runs do; error vs FTCS is
+# still computed by the group postproc against the ftcs_reference case.
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--nu" = 0.08
+"--cfl" = 0.3
+"--n-steps" = 100
+"--ic" = "sine"
+"--ic-amplitude" = 0.3
+"--bc" = "periodic"
+"--source" = "none"
+"--evolution-mode" = "measure_reprepare"
+
+"--seed" = 1234
+"--shots" = 2000000
+"--metric-transpile-timeout" = 0
+
+"--q" = 10
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--segment-size" = 5
+"--save-every" = 5     # must be a multiple of segment-size; snapshots
+                       # only land on segment boundaries (-> 20 frames)
+"--bond-dim" = 32
+"--phi-modes" = 8
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 2000
+"--save-every" = 5     # match the CH cadence so the movie overlays
+                       # both methods on the same 20 frames
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --reference ftcs_reference --no-ic"]

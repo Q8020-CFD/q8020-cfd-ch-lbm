@@ -1,0 +1,59 @@
+# =====================================================================
+# SIM-vs-REAL : smooth movie, q=10  (high-shot "nice" variant)
+# ---------------------------------------------------------------------
+# Same physics and circuit as burgers_smooth_q10.toml, but with the shot
+# budget raised to fight the measure_reprepare sampling noise that makes
+# the plain q10 movie look ragged.
+#
+# Why 2,000,000 shots:  measure_reprepare spreads a fixed shot budget
+# over N = 2^q grid points, so shot noise per amplitude grows ~sqrt(N).
+# At q10, N=1024, the baseline 150k shots = ~147 shots/point (vs ~2344
+# at q6, ~1172 at q7) -- badly under-sampled, hence the ragged curve.
+# 2,000,000 shots = ~1953 shots/point, restoring roughly q6-level
+# per-point statistics.  This stays an honest *sampled* run (sim-vs-real),
+# it is just heavier: expect minutes, not the ~28s the 150k run took.
+#
+# bond_dim=32 / ref_points=2000 retained from the ab-qN ladder (q10).
+#
+# One q per file (ab-qN convention): a single-q run_dir lets the movie
+# postproc compare CH vs the one FTCS reference cleanly.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+
+"--nu" = 0.08
+"--cfl" = 0.3
+"--n-steps" = 6
+"--ic" = "sine"
+"--ic-amplitude" = 0.3
+"--bc" = "periodic"
+"--source" = "none"
+"--evolution-mode" = "measure_reprepare"
+
+"--seed" = 1234
+"--shots" = 2000000
+"--metric-transpile-timeout" = 0
+
+"--q" = 10
+
+# ---------------------------------------------------------------------
+[cole_hopf_circuit]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--segment-size" = 1
+"--save-every" = 1
+"--bond-dim" = 32
+"--phi-modes" = 8
+
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 2000
+"--save-every" = 1
+
+# ---------------------------------------------------------------------
+_group_postproc = ["./.venv/bin/python ./q8020-mps-burgers/postproc/plot_method_compare.py --reference ftcs_reference --no-ic"]
