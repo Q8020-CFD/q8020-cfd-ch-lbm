@@ -1,0 +1,49 @@
+# =====================================================================
+# FTCS REFERENCE (shock) : q8 / N=256 -- the >=200-point canonical ref
+# ---------------------------------------------------------------------
+# One classical FTCS reference for the whole shock bakeoff dial-up.
+# ftcs_reference ALWAYS subsamples its stored solution_steps back to the
+# q-grid (N=2^q), so the stored point count = 2^q regardless of
+# --ref-points (which only refines the INTERNAL integration).  To get a
+# >=200-point stored reference we therefore run at q8 (N=256).
+#
+# Same shock operating point as burgers_ab_shock_q{6,7,8}: A=0.4,
+# nu=0.03, cfl=0.1, periodic sine.  n-steps=920 / save-every=10 reach the
+# shared ~90% t_shock point with full per-frame snapshots (the existing
+# q8 ref was final-only).  This 256-pt / 92-frame curve is the truth
+# target; the movie/scoring interpolates it down onto each lower-q grid.
+#
+# FTCS is classical -- the solution depends only on A/nu/IC/BC, not q --
+# so this single high-res run is the reference for q4, q6, q7, q8 alike.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+"--save-every" = 10
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 8
+"--n-steps" = 920
+
+# ---------------------------------------------------------------------
+[ftcs_ref]
+"--method" = "ftcs_reference"
+"--ref-points" = 800                  # internal refinement; stored output = N=256

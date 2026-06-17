@@ -93,7 +93,35 @@ def _load_run(run: dict, base: Path) -> dict | None:
     if grid.size == 0 or not steps:
         print(f"  {run['label']}: empty grid/steps", file=sys.stderr)
         return None
-    return {"label": run["label"], "grid": grid, "steps": steps}
+    # Normalize each run's timeline to [0, 1] (step / max_step).  Runs
+    # differ in grid size AND step count but all end at the same physical
+    # point, so the normalized fraction is the shared movie clock.
+    keys = sorted(steps)
+    smax = keys[-1] or 1
+    times = [k / smax for k in keys]
+    snaps = [steps[k] for k in keys]
+    return {
+        "label": run["label"], "grid": grid,
+        "times": times, "snaps": snaps,
+    }
+
+
+def _sample(run: dict, t: float) -> np.ndarray:
+    """Profile at the snapshot nearest normalized time t, on run's grid."""
+    i = min(range(len(run["times"])),
+            key=lambda j: abs(run["times"][j] - t))
+    return run["snaps"][i]
+
+
+def _sample_on(run: dict, t: float, target_grid: np.ndarray) -> np.ndarray:
+    """Run's profile at time t interpolated onto target_grid (for error
+    against a reference on a different grid)."""
+    y = _sample(run, t)
+    if len(run["grid"]) == len(target_grid) and np.allclose(
+        run["grid"], target_grid
+    ):
+        return y
+    return np.interp(target_grid, run["grid"], y)
 
 
 def main() -> None:
@@ -116,8 +144,10 @@ def main() -> None:
         print("No usable runs found.", file=sys.stderr)
         sys.exit(1)
 
-    # Common frame timeline = union of every run's step keys.
-    all_steps = sorted({s for run in runs for s in run["steps"]})
+    # Shared movie clock = union of every run's NORMALIZED times.  Runs
+    # differ in grid size and step count but all end at the same physical
+    # point, so step/max_step is the common timeline.
+    frame_times = sorted({t for run in runs for t in run["times"]})
 
     # Identify the reference run (the error baseline) from the dataset.
     # Error panel measures every OTHER run's L2 distance to it; the
@@ -130,26 +160,22 @@ def main() -> None:
             break
     ref_run = next((r for r in runs if r["label"] == ref_label), None)
 
-    def _nearest_step(run: dict, step: int) -> np.ndarray:
-        keys = sorted(run["steps"])
-        k = min(keys, key=lambda kk: abs(kk - step))
-        return run["steps"][k]
-
-    # Precompute per-step L2 error of each non-reference run vs the
-    # reference, on the reference's grid.
+    # Per-frame L2 error of each non-reference run vs the reference,
+    # interpolated onto the reference grid (runs live on different grids).
     err_runs = [r for r in runs if r["label"] != ref_label]
     err_curve: dict[str, list[float]] = {}
     if ref_run is not None:
+        rgrid = ref_run["grid"]
         for run in err_runs:
             errs = []
-            for s in all_steps:
-                diff = _nearest_step(run, s) - _nearest_step(ref_run, s)
+            for t in frame_times:
+                diff = _sample_on(run, t, rgrid) - _sample(ref_run, t)
                 errs.append(float(np.sqrt(np.mean(diff ** 2))))
             err_curve[run["label"]] = errs
 
     # y-limits across every snapshot, with a small margin.
     all_vals = np.concatenate(
-        [v for run in runs for v in run["steps"].values()]
+        [v for run in runs for v in run["snaps"]]
     )
     ymin, ymax = float(all_vals.min()), float(all_vals.max())
     pad = 0.08 * (ymax - ymin or 1.0)
@@ -186,9 +212,20 @@ def main() -> None:
     g = ds.get("global", {})
     shock = _shock_pct(g)
     shock_str = f", to shock {shock:.0f}%" if shock is not None else ""
+    # q: use the global scalar if set, else the range swept across runs.
+    if "q" in g:
+        q_str = str(g["q"])
+    else:
+        qs = sorted({r["q"] for r in ds.get("runs", []) if "q" in r})
+        if not qs:
+            q_str = "sweep"
+        elif len(qs) == 1:
+            q_str = str(qs[0])
+        else:
+            q_str = f"{qs[0]}-{qs[-1]}"
     subtitle = (
         f"{ds.get('name', ds_path.stem)}  "
-        f"(q={g.get('q', '?')}, nu={g.get('nu', '?')}, "
+        f"(q={q_str}, nu={g.get('nu', '?')}, "
         f"A={g.get('ic_amplitude', '?')}, cfl={g.get('cfl', '?')}, "
         f"{g.get('bc', '?')}{shock_str})"
     )
@@ -203,21 +240,20 @@ def main() -> None:
                 color=color[run["label"]], label=run["label"],
             )
             err_lines[run["label"]] = ln
-        ax_err.set_xlim(all_steps[0], all_steps[-1])
+        ax_err.set_xlim(frame_times[0], frame_times[-1])
         ax_err.set_ylim(0.0, emax * 1.08 or 1.0)
-        ax_err.set_xlabel("step")
+        ax_err.set_xlabel("normalized time (t / t_end)")
         ax_err.set_ylabel(f"L2 error vs {ref_label}")
         ax_err.grid(True, alpha=0.3)
 
     def update(frame_idx: int):
-        step = all_steps[frame_idx]
+        t = frame_times[frame_idx]
         for run in runs:
-            y = _nearest_step(run, step)
-            lines[run["label"]].set_data(run["grid"], y)
-        title.set_text(f"{subtitle}\nstep {step}/{all_steps[-1]}")
+            lines[run["label"]].set_data(run["grid"], _sample(run, t))
+        title.set_text(f"{subtitle}\nt/t_end = {t:.2f}")
         artists = list(lines.values()) + [title]
         if have_err:
-            xs = all_steps[: frame_idx + 1]
+            xs = frame_times[: frame_idx + 1]
             for label, ln in err_lines.items():
                 ln.set_data(xs, err_curve[label][: frame_idx + 1])
             artists += list(err_lines.values())
@@ -225,7 +261,7 @@ def main() -> None:
 
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     anim = manimation.FuncAnimation(
-        fig, update, frames=len(all_steps), interval=1000 / args.fps,
+        fig, update, frames=len(frame_times), interval=1000 / args.fps,
         blit=False,
     )
 

@@ -1,0 +1,80 @@
+# =====================================================================
+# CH SEAM-ERROR study : shock q7, save AT every re-prepare boundary
+# ---------------------------------------------------------------------
+# Companion to burgers_ch_segsize_shock_q7.toml.  That file uses a fixed
+# save-every=10 (movie-consistent) which ALIASES the seam sawtooth at
+# small segment-size.  This file instead saves at EVERY seam
+# (save-every = segment-size per group), so the per-frame L2 error curve
+# resolves the jump injected at each measure-reprepare boundary.
+#
+# measure_reprepare chops evolution into segments of `segment_size` steps;
+# at each boundary the state is measured (150k shots) and re-prepared,
+# re-applying the phi-modes=8 low-pass + Cole-Hopf log/exp round-trip.
+# That per-seam error is what (in sim) drives the CH high-q blow-up.
+# Number of seams = n_steps/segment_size - 1.
+#
+# Fixed at the q7 shock baseline (A=0.4, nu=0.03, cfl=0.1, periodic sine,
+# n_steps=460, bond-dim=8, phi-modes=8).  Each group sets segment-size
+# AND a matching save-every (a single swept list cannot pair them), so a
+# group's own snapshots land exactly on its seams:
+#       seg  2 / save  2  -> 229 seams (fine teeth)   ~40s
+#       seg  5 / save  5  ->  91 seams               ~80s
+#       seg 10 / save 10  ->  45 seams (coarse teeth) ~12min
+#
+# The 'single' group is the NO-SEAM control: one shot of evolution, no
+# re-prepare, the zero-seam anchor the sawtooth amplitudes are measured
+# against.  Score every group post hoc vs the existing q7 ftcs_reference.
+#
+# NOTE: native (non-uniform across groups) save cadence means these are
+# analyzed per-group, NOT overlaid in the shared dial-up movie.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 7
+"--n-steps" = 460
+
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8                       # baseline (held fixed)
+"--phi-modes" = 8                      # baseline (held fixed)
+
+# ---------------------------------------------------------------------
+# Each group: segment-size with save-every matched to land on every seam.
+[seam_seg2]
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 2
+"--save-every" = 2                     # 229 seams resolved
+
+[seam_seg5]
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 5
+"--save-every" = 5                     # 91 seams resolved
+
+[seam_seg10]
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+"--save-every" = 10                    # 45 seams resolved
+
+# No-seam control: single-shot evolution, no re-prepare.  Zero-seam anchor.
+[no_seam_single]
+"--evolution-mode" = "single"
+"--save-every" = 10                    # sampling only; no seams to resolve

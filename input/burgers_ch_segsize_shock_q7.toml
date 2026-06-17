@@ -1,0 +1,58 @@
+# =====================================================================
+# CH SEGMENT-SIZE ablation : shock q7, sweep segment-size only
+# ---------------------------------------------------------------------
+# Tests whether measure-reprepare CADENCE is a lever on the CH shock
+# blow-up.  The instability scales with the number of re-prepare cycles
+# (n_steps / segment_size): each cycle re-measures and re-prepares the
+# state, so the log/exp + phi-truncation error compounds once per cycle.
+# Larger segment-size = FEWER cycles = less accumulation (but coarser
+# nonlinear update within a segment); smaller = more cycles.
+#
+# Fixed at the q7 shock baseline (A=0.4, nu=0.03, cfl=0.1, periodic sine,
+# n_steps=460, bond-dim=8, phi-modes=8) so segment-size is the ONLY
+# variable.  q7 chosen as the marginal case (baseline relL2 ~1.5) -- the
+# regime where a cadence effect should be most visible, and cheaper than
+# q8.  Score post hoc against the existing q7 ftcs_reference.
+#
+# segment-size swept over divisors of 460 (n_steps % segment_size must be
+# 0 for measure_reprepare).  Trimmed to the affordable end -- sim cost
+# rises ~9x per doubling of segment-size (deeper circuits), and recorded
+# q7 runs give seg5~80s, seg10~12min, so seg>=20 runs into hours:
+#       seg  2  ->  230 cycles  (~40s)
+#       seg  5  ->   92 cycles  (~80s, the movie/baseline cadence)
+#       seg 10  ->   46 cycles  (~12min)
+# save-every=10 keeps snapshots comparable across the sweep.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--save-every" = 10
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 7
+"--n-steps" = 460
+
+# ---------------------------------------------------------------------
+[ch_segsweep]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8                       # baseline (held fixed)
+"--phi-modes" = 8                      # baseline (held fixed)
+"--segment-size" = [2, 5, 10]          # the swept lever -> 230/92/46 cycles
