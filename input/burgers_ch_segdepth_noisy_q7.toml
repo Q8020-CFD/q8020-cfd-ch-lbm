@@ -1,0 +1,71 @@
+# =====================================================================
+# CH SEGMENT vs DEPTH tradeoff : q7 shock, NOISY sim
+# ---------------------------------------------------------------------
+# The figure the noiseless seam study cannot make.  Sweeping segment-size
+# changes TWO competing error sources:
+#   * seam / re-prepare error  -- FALLS as segments lengthen (fewer
+#     measure/re-prepare cycles = fewer shot+truncation injections).
+#   * circuit-depth error      -- RISES as segments lengthen (each
+#     segment is a deeper circuit; more gates = more decoherence).
+# On a NOISELESS statevector sim only the first term exists, so longer is
+# monotonically better (we measured seg10 < seg5 error).  Under a noise
+# model BOTH terms are present, so there is an OPTIMUM segment-size -- a
+# U-shaped error-vs-segment curve.  That optimum is the whole point.
+#
+# Noise via AerSimulator + a thermal-relaxation model (--t1/--t2,
+# Heron-class ~150/100 us); --backend-type sim keeps it a noisy SIMULATOR
+# (no QPU, no credentials).  Deeper per-segment circuits then genuinely
+# decohere, unlike the noiseless seam study.
+#
+# Fixed at the q7 shock baseline (A=0.4, nu=0.03, cfl=0.1, n_steps=460,
+# bond-dim=8, phi-modes=8) so segment-size is the only sweep variable.
+# segment-size over divisors of 460 (first pass; seg=20 dropped -- it ran
+# to hours under noise.  Add it later only if the optimum sits at seg>=10):
+#       seg  2 -> 230 cycles (shallow segments, many seams)
+#       seg  5 ->  92 cycles
+#       seg 10 ->  46 cycles (deep segments, few seams)
+# Score post hoc vs the existing q7 ftcs_reference; also read
+# deepest_depth / cx per segment from q8020_analysis_0.json so the figure
+# can plot error AND depth vs segment-size.
+#
+# COST: ~45-70 min total for {2,5,10} under noise (seg10 dominates at
+# ~35-60 min; noisy sim is several-x the noiseless seg10 of ~12 min).
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--save-every" = 10
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
+
+# noisy simulator: thermal relaxation, Heron-class coherence (microseconds)
+"--backend-type" = "sim"
+"--t1" = 150.0
+"--t2" = 100.0
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 7
+"--n-steps" = 460
+
+# ---------------------------------------------------------------------
+[ch_segdepth]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 8                       # baseline (held fixed)
+"--phi-modes" = 8                      # baseline (held fixed)
+"--segment-size" = [2, 5, 10]          # the swept lever -> 230/92/46 cycles
