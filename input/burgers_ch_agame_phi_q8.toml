@@ -1,0 +1,69 @@
+# =====================================================================
+# CH "A-GAME" at q8 : phi-modes sweep, MUTUAL case (case1, nu=0.03)
+# ---------------------------------------------------------------------
+# RESULT (2026-06-17): phi-modes is NOT a lever here.  phi=16 scored
+# relL2=1.66 vs the phi=8 baseline's 1.615 -- marginally WORSE, still
+# ~4x over-amplified (amp 1.00 vs ref 0.249).  phi=32 killed before
+# finishing.  Combined with the dead bond-dim sweep, BOTH CH tunable
+# knobs fail at q8: the over-amplification is intrinsic to the Cole-Hopf
+# transform on the fine grid, not a settings problem.  case1 keeps q8 CH
+# at the baseline bd=16 / phi=8.  Kept for the record; do not re-run.
+# ---------------------------------------------------------------------
+# The CH "A-game" line for case1_bakeoff_mutual_qubit_dialup (A=0.3,
+# nu=0.03).  At this mutual operating point baseline q8 CH (phi-modes=8)
+# is STRESSED but not detonated: final amp ~0.96 vs a reference amp ~0.3
+# -- it over-amplifies rather than tracking.  Question: does giving CH
+# its A-game (more Fourier modes kept before the inverse Cole-Hopf)
+# tighten q8 back toward the reference?
+#
+# phi peakedness ~ exp(A/(2*pi*nu)) ~ 4.9x here, so an 8-mode low-pass of
+# a 256-point phi under-resolves it; the truncation residual is what the
+# per-segment measure/re-prepare amplifies.  This sweeps ONLY phi-modes,
+# everything else pinned at the case1 q8 baseline (matches
+# burgers_ab_mutual_q8_nu030):
+#   phi-modes=8 is the existing case1 baseline (amp ~0.96) -- not re-run
+#   here.  This sweeps the A-game candidates only:
+#       phi 16  -> 2x baseline
+#       phi 32  -> 4x baseline
+#
+# Read: the phi-modes that brings q8 CH amp closest to the reference is
+# CH's A-game setting for the mutual dial-up.  bond-dim held at 16 to
+# MATCH the case1 baseline q8 CH run -- so phi-modes is the only delta
+# vs baseline (a clean controlled comparison), not because bd matters
+# (the bd sweep saturates by bd=4).  Score each post hoc vs the existing
+# q8 nu030 ftcs_reference.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+# mutual / case1 operating point (matches burgers_ab_mutual_q8_nu030)
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 5
+"--save-every" = 10
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.3
+"--nu" = 0.03
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 8
+"--n-steps" = 400
+
+# ---------------------------------------------------------------------
+[ch_phi_sweep]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--bond-dim" = 16              # matches the case1 baseline q8 CH (clean phi-only delta)
+"--phi-modes" = [16, 32]       # A-game candidates (baseline phi=8 already run)

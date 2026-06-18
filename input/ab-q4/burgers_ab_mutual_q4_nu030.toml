@@ -40,7 +40,11 @@ _script = "python ./q8020-mps-burgers/src/burgers_solver.py"
 "--metric-transpile-timeout" = 0
 
 "--q" = 4
-"--n-steps" = 30                     # scaled from q6 (xN/64); /10-aligned
+"--n-steps" = 30                     # 3 QLBM lattice steps (cfl=1, N=16): all
+                                     # 3 q4 methods land together at 34% T_shock.
+                                     # QLBM's coarse N=16 lattice can only hit
+                                     # 23% or 34%, never q6/q8's 29% -- so 30
+                                     # keeps the q4 trio internally aligned.
 
 # ---------------------------------------------------------------------
 [cole_hopf_circuit]

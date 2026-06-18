@@ -1,0 +1,61 @@
+# =====================================================================
+# SHOCK fill-ins : CH q8 + QLBM q8, same shock point
+# ---------------------------------------------------------------------
+# Fills the q8 gap in the shock-movie sequence (case2 /
+# bakeoff_shock_qubit_dialup):
+#   * CH q8 with per-frame snapshots, knobs matching the case1 q8 CH run
+#     (bond-dim 16 / phi-modes 8).
+#   * QLBM q8 with per-frame snapshots (the existing q8 QLBM was
+#     final-only, so it could not go in the movie).
+# The baseline CH q4/q6 and the QALB/reference runs are reused as-is.
+#
+# Operating point matches burgers_ab_shock_q8: A=0.4, nu=0.03, cfl=0.1,
+# periodic sine, measure_reprepare.  n-steps SCALES with the grid (920
+# at q8) so it reaches the SAME physical time as the kept q6 run, ~90%
+# t_shock (t_end = 0.3594, t_shock = 1/(A*2*pi) = 0.3979).  save-every =
+# 10, segment-size = 5 match the q4/q6 CH runs already in the movie so
+# snapshot times nest (q6 frame k <-> q8 4k) and overlay on q6's
+# timeline.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+# shock operating point — identical to the baseline shock runs
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 5                   # matches the q4/q6 CH runs in the movie
+"--save-every" = 10
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+# ---------------------------------------------------------------------
+# n-steps scales with N so every group reaches the same ~90% t_shock
+# point as the kept baseline q6 run.  --method is per-group.
+[ch_q8]
+"--method" = "cole_hopf_circuit"
+"--propagator" = "qft-diagonal"
+"--q" = 8
+"--n-steps" = 920                     # ~90% t_shock at q8 (N=256)
+"--bond-dim" = 16                     # match case1 q8 CH (bd16/phi8)
+"--phi-modes" = 8                     # match case1 q8 CH (bd16/phi8)
+
+[qlbm_q8]
+"--method" = "qlbm_circuit"
+"--q" = 8
+"--n-steps" = 920                     # same shock point; per-frame snapshots
+"--fock-qubits" = 3                   # qc=3 convergent (matches baseline QLBM)
+"--qalb-collision-trotter-reps" = 0   # dense exact collision = best L2

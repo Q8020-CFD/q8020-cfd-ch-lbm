@@ -1,0 +1,60 @@
+# =====================================================================
+# QLBM/QALB ablation : q7, sweep fock-qubits x trotter-reps
+# ---------------------------------------------------------------------
+# The QLBM mirror of the CH seam/segment study.  Every QLBM run in the
+# tree was fock-qubits=3 / trotter-reps=0; its two real knobs have never
+# been swept.  This isolates QLBM's own accuracy/cost tradeoff:
+#
+#   --fock-qubits : bosonic Fock qubits per density register for the
+#       collision.  qc=2 is too coarse (truncation floor), qc=3 is the
+#       Itani App-B converged value; qc=4 tests headroom.  Drives qubit
+#       count and circuit width.
+#   --qalb-collision-trotter-reps : 0 = dense exact UnitaryGate of the
+#       collision (best L2, deepest); >0 = Suzuki-Trotter of the Pauli
+#       collision at that rep count (hardware-honest depth; order-2 error
+#       ~ 1/reps^2).  Drives circuit DEPTH / CX.
+#
+# Fixed at a representative q7 operating point (A=0.4, nu=0.03, cfl=0.1,
+# periodic sine, n_steps=200, segment-size=10) so the two knobs are the
+# only variables.  Score each post hoc vs the existing q7 ftcs_reference
+# and read CX/depth/n_qubits from q8020_analysis_0.json.
+#
+# Sweep = full fock x trotter grid (3 x 3 = 9 cases):
+#       fock-qubits           in {2, 3, 4}
+#       trotter-reps          in {0, 2, 4}    (0 = dense exact)
+# Cost note: QLBM is the costly method (~119k CX, ~17min/run at q7,
+# n_steps=200); 9 cases is a multi-hour sweep -- run deliberately, not
+# casually.  Trim to fock {2,3,4} x reps {0,4} (6 cases) for a first cut.
+# =====================================================================
+
+[global]
+_output_dir = "~/q8020"
+_inject_outdir = "--outdir"
+_env = "./.venv"
+_script = "python ./q8020-mps-burgers/src/burgers_solver.py"
+"--noshow" = true
+"--no-classical-reference" = true
+"--no-analytic-reference" = true
+
+"--cfl" = 0.1
+"--evolution-mode" = "measure_reprepare"
+"--segment-size" = 10
+"--save-every" = 10
+"--bc" = "periodic"
+"--ic" = "sine"
+"--source" = "none"
+"--ic-amplitude" = 0.4
+"--nu" = 0.03
+
+"--seed" = 1234
+"--shots" = 150000
+"--metric-transpile-timeout" = 0
+
+"--q" = 7
+"--n-steps" = 200
+
+# ---------------------------------------------------------------------
+[qlbm_ablation]
+"--method" = "qlbm_circuit"
+"--fock-qubits" = [2, 3, 4]
+"--qalb-collision-trotter-reps" = [0, 2, 4]

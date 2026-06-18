@@ -36,18 +36,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def _shock_pct(g: dict) -> float | None:
-    """Effective % of inviscid shock time the run reached.  Uses the
-    dataset's explicit value if present, else derives it from the global
-    physics: t_end = n_steps * cfl * dx, t_shock = 1/max|du0/dx| on the
-    N=2^q grid for the sine IC u0 = A*sin(2*pi*x)."""
-    if "shock_pct_effective" in g:
-        return float(g["shock_pct_effective"])
+def _shock_pct(g: dict, run: dict | None = None) -> float | None:
+    """Effective % of inviscid shock time a run reached.  q and n_steps may
+    live on the run (they differ across a q-dialup dataset) or, for a single-
+    physics dataset, on the global block; the run value wins when present.
+    Uses an explicit shock_pct_effective if given, else derives it from
+    t_end = n_steps * cfl * dx, t_shock = 1/max|du0/dx| on the N=2^q grid for
+    the sine IC u0 = A*sin(2*pi*x).  Note t_shock is evaluated on the run's
+    own grid, so a coarse grid's under-resolved gradient is reflected."""
+    src = {**g, **(run or {})}
+    if "shock_pct_effective" in src:
+        return float(src["shock_pct_effective"])
     try:
-        q = int(g["q"])
-        cfl = float(g["cfl"])
-        n_steps = int(g["n_steps"])
-        amp = float(g["ic_amplitude"])
+        q = int(src["q"])
+        cfl = float(src["cfl"])
+        n_steps = int(src["n_steps"])
+        amp = float(src["ic_amplitude"])
     except (KeyError, TypeError, ValueError):
         return None
     n = 2 ** q
@@ -129,16 +133,24 @@ def main() -> None:
     ap.add_argument("dataset", help="path to the dataset JSON")
     ap.add_argument("--out", default=None, help="output GIF path")
     ap.add_argument("--fps", type=int, default=2, help="frames per second")
+    ap.add_argument(
+        "--ylim", type=float, default=None,
+        help="clamp profile panel to +/- this value (a detonating run "
+             "otherwise auto-scales the axis and hides the others); "
+             "overrides the dataset's global.ylim if set",
+    )
     args = ap.parse_args()
 
     ds_path = Path(args.dataset).resolve()
     ds = json.loads(ds_path.read_text())
     base = ds_path.parent
 
+    g = ds.get("global", {})
     runs = []
     for r in ds.get("runs", []):
         loaded = _load_run(r, base)
         if loaded is not None:
+            loaded["shock_pct"] = _shock_pct(g, r)
             runs.append(loaded)
     if not runs:
         print("No usable runs found.", file=sys.stderr)
@@ -180,6 +192,11 @@ def main() -> None:
     ymin, ymax = float(all_vals.min()), float(all_vals.max())
     pad = 0.08 * (ymax - ymin or 1.0)
     ymin, ymax = ymin - pad, ymax + pad
+    # Profile clamp: CLI --ylim wins, else the dataset's global.ylim (so a
+    # detonating run doesn't auto-scale the axis and hide the others).
+    ylim = args.ylim if args.ylim is not None else g.get("ylim")
+    if ylim is not None:
+        ymin, ymax = -float(ylim), float(ylim)
 
     have_err = bool(err_curve)
     if have_err:
@@ -209,9 +226,17 @@ def main() -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper right", fontsize=8, ncol=2)
     title = ax.set_title("")
-    g = ds.get("global", {})
-    shock = _shock_pct(g)
-    shock_str = f", to shock {shock:.0f}%" if shock is not None else ""
+    # Title shock %: a single value if every run reached the same fraction,
+    # else the min-max range across runs (a q-dialup set with mismatched
+    # n_steps lands the coarse grids at a different % than the fine ones).
+    sps = sorted({round(r["shock_pct"], 1) for r in runs
+                  if r.get("shock_pct") is not None})
+    if not sps:
+        shock_str = ""
+    elif len(sps) == 1:
+        shock_str = f", to shock {sps[0]:.0f}%"
+    else:
+        shock_str = f", to shock {sps[0]:.0f}-{sps[-1]:.0f}%"
     # q: use the global scalar if set, else the range swept across runs.
     if "q" in g:
         q_str = str(g["q"])
@@ -233,7 +258,16 @@ def main() -> None:
     # ── error panel ────────────────────────────────────────────────
     err_lines = {}
     if have_err:
-        emax = max(max(v) for v in err_curve.values())
+        # Robust y-limit: a detonating run (error in the 10s-100s) would
+        # crush every meaningful curve into the floor.  Scale to the
+        # NON-detonated runs only -- a run is "detonated" if its final
+        # error exceeds 5x the median final error across runs -- so the
+        # comparison band is legible and blown-up curves clip off the top.
+        finals = {k: v[-1] for k, v in err_curve.items()}
+        med = float(np.median(list(finals.values()))) or 1.0
+        tame = [v for k, vals in err_curve.items()
+                for v in vals if finals[k] <= 5.0 * med]
+        emax = (max(tame) if tame else max(finals.values())) * 1.4 or 1.0
         for run in err_runs:
             (ln,) = ax_err.plot(
                 [], [], marker="o", ms=4, lw=1.8,
@@ -241,7 +275,7 @@ def main() -> None:
             )
             err_lines[run["label"]] = ln
         ax_err.set_xlim(frame_times[0], frame_times[-1])
-        ax_err.set_ylim(0.0, emax * 1.08 or 1.0)
+        ax_err.set_ylim(0.0, emax)
         ax_err.set_xlabel("normalized time (t / t_end)")
         ax_err.set_ylabel(f"L2 error vs {ref_label}")
         ax_err.grid(True, alpha=0.3)
