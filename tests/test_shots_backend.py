@@ -2,12 +2,13 @@
 
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import numpy as np
 
-from burgers_cole_hopf_circuit import run_cole_hopf_circuit_simulation
+from lib_cole_hopf_circuit import run_cole_hopf_circuit_simulation
 from q8020_cfd_qutil.backend import get_backend
 
 
@@ -28,7 +29,7 @@ class TestColeHopfShotsIdeal:
         backend = get_backend(backend_type="sim")
         sols, mets = run_cole_hopf_circuit_simulation(
             u0, x, nu=0.01, dt=0.001, n_steps=2,
-            shots=2048, propagator="dense-block",
+            shots=2048,
             backend=backend, seed=42,
         )
         assert len(sols) == 3
@@ -41,7 +42,7 @@ class TestColeHopfShotsIdeal:
         backend = get_backend(backend_type="sim", t1=50, t2=70)
         sols, mets = run_cole_hopf_circuit_simulation(
             u0, x, nu=0.01, dt=0.001, n_steps=2,
-            shots=2048, propagator="qft-diagonal",
+            shots=2048,
             backend=backend, seed=42,
         )
         assert np.all(np.isfinite(sols[-1]))
@@ -51,9 +52,9 @@ class TestColeHopfShotsIdeal:
         """Same seed -> bit-identical phi_hat."""
         u0, x, _ = _make_ic(q=3)
         backend = get_backend(backend_type="sim")
-        kwargs = dict(
+        kwargs: dict[str, Any] = dict(
             nu=0.01, dt=0.001, n_steps=2,
-            shots=2048, propagator="dense-block",
+            shots=2048,
             backend=backend, seed=42,
         )
         s1, _ = run_cole_hopf_circuit_simulation(u0, x, **kwargs)
@@ -66,7 +67,7 @@ class TestColeHopfShotsIdeal:
         backend = get_backend(backend_type="sim")
         _, mets = run_cole_hopf_circuit_simulation(
             u0, x, nu=0.01, dt=0.001, n_steps=2,
-            shots=2048, propagator="dense-block",
+            shots=2048,
             backend=backend, seed=42,
         )
         m = mets[-1]

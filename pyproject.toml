@@ -3,26 +3,27 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "q8020-mps-burgers"
+name = "q8020-cfd-ch-lbm"
 version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "qiskit>=2.0,<3.0",
     "qiskit_aer",
+    "qiskit_ibm_runtime",
     "matplotlib",
     "numpy",
     "scipy",
-    "quimb",
-    "numba>=0.59",
     "pytest",
-    "q8020_cfd_metautil",
-    "q8020_cfd_qutil",
+    "ruff",
+    "q8020_cfd_metautil @ git+https://github.com/Q8020-CFD/q8020-cfd-metautil.git",
+    "q8020_cfd_qutil @ git+https://github.com/Q8020-CFD/q8020-cfd-qutil.git",
 ]
 
+# for devs of the tooling
 [tool.uv.sources]
-q8020_cfd_metautil = { workspace = true }
-q8020_cfd_qutil = { workspace = true }
+q8020_cfd_metautil = { path = "../q8020-cfd-metautil", editable = true }
+q8020_cfd_qutil = { path = "../q8020-cfd-qutil", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -35,12 +36,27 @@ line-length = 88
 
 [tool.ruff]
 line-length = 88
+src = ["src"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["lib_classical", "lib_cole_hopf",
+    "lib_cole_hopf_circuit", "lib_fd", "lib_fw", "lib_lbm",
+    "lib_mps", "lib_postprocess", "lib_qalb_circuit",
+    "burgers_solver"]
 
 [tool.pylint.messages_control]
 disable = [
-    "C0103",
-    "C0305",
-    "C0303",
-    "C0301",
-    "W0621",
+    "C0103",  # invalid-name
+    "C0305",  # trailing-newlines
+    "C0303",  # trailing-whitespace
+    "C0301",  # line-too-long
+    "W0621",  # redefined-outer-name
+    "C0413",  # wrong-import-position
+    "C0116",  # missing-function-docstring
+    "W0718",  # broad-exception-caught
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]

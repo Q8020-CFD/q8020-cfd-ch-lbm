@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use('Agg')
 
 import matplotlib.animation as manimation
@@ -138,7 +139,7 @@ def main() -> None:
 
     # For classical reference per step: recompute with the same BC to match
     # the quantum path exactly.  Using the IC from step 0.
-    from burgers_classical import solve_burgers_reference_coarse_ic
+    from lib_classical import solve_burgers_reference_coarse_ic
     dt = float(anchor_meta.get('dt', 0.0))
     nu = float(anchor_meta.get('nu', 1e-4))
     bc = anchor_meta.get('bc', 'periodic')

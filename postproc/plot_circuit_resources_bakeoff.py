@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
@@ -61,7 +62,7 @@ def _ch_qubit_split(q: int, segment_size: int, bond_dim: int | None,
         src = Path(__file__).resolve().parent.parent / "src"
         if str(src) not in sys.path:
             sys.path.insert(0, str(src))
-        from burgers_cole_hopf_circuit import build_segment_circuit
+        from lib_cole_hopf_circuit import build_segment_circuit
         n = 2 ** q
         x = np.arange(n) / n
         phi = np.exp(0.3 * np.sin(2 * np.pi * x))      # generic positive state

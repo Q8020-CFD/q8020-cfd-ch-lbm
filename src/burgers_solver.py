@@ -1,35 +1,16 @@
 """Solve 1D Burgers equation via quantum tensor-network algorithm.
 
-The `quantum_circuit` method implements Gopalakrishnan Meena et al.
-AIAA-2026 Appendix A.A (Eqs. 16-17): per-step Pauli decomposition of
-the classical Euler RHS, then Trotterized circuit evolution of the
-fitted unitary e^{-iÂδτ}.  This is a HYBRID pathway, not pure quantum:
-every step runs a classical Euler RHS, a classical least-squares fit
-of the Pauli coefficients, and classical norm tracking around the
-unitary application.  The only pure-quantum pathway in this codebase
-is `cole_hopf_circuit`.  The paper's §V.C pipeline (classical Euler
-with `quimb` MPS/MPO spatial operators) is NOT implemented here; we
-use it externally as a reference path.
-
-At each time step the underlying classical update has the §V.C Eq. 15
-form: u(t+δτ) = u(t) + δτ [ν∇²u - u·∇u + g], but the spatial operators
-are plain shift-matrix FD, not MPS/MPO via quimb.
-
 Methods supported (see docs/OVERVIEW-burgers-solver.md for the full
 list and classification):
 - shift: classical Euler with shift-operator FD
-- quantum_exact: Pauli decomposition + exact matrix exponential
-- quantum_circuit: Pauli decomposition + Trotterized circuit (Appendix A.A)
-- mps: MPS state-prep circuit + exact Hamiltonian evolution
-- tebd / tebd_circuit: TEBD classical / quantum
-- cole_hopf / cole_hopf_circuit: Cole-Hopf linearisation, MPS / pure quantum
+- ftcs_reference: resolved FTCS on a >= --ref-points grid, subsampled
+  back to the q-grid (the shared classical reference, run as its own
+  case)
+- cole_hopf_circuit: Cole-Hopf linearisation, pure-quantum heat
+  propagator
 - lbm: classical D1Q3 lattice Boltzmann (no quantum content -- no
   shots, no backend)
-- qlbm_circuit_hybrid: quantum-circuit D1Q3 (retired hybrid Option A;
-  classical collision shadow + Householder dilation; shots honoured).
-  Kept as the cross-validation oracle. `qlbm_circuit` is a back-compat
-  alias to it until the pure-quantum QALB lands (see
-  docs/future/SPEC-qlbm-pure-quantum-qalb.md).
+- qlbm_circuit: pure-quantum QALB (Phase 2)
 
 Integrates with q8020 sweeper via argparse CLI and metadata fragment writers.
 """
@@ -46,26 +27,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
-
 from q8020_cfd_metautil.args import add_standard_quantum_args
+from q8020_cfd_metautil.solverfw import Grid1D
 
-from burgers_classical import (
+from lib_classical import (
     initial_condition_gaussian,
-    initial_condition_sine,
     initial_condition_multimode,
-    source_term_sine,
+    initial_condition_sine,
     solve_burgers,
+    source_term_sine,
 )
-from burgers_cole_hopf import (
+from lib_cole_hopf import (
     analytic_solution_cole_hopf,
     initial_condition_cole_hopf_exact,
     validate_cole_hopf_coeffs,
 )
-from burgers_fw import BurgersConfig, run_simulation_fw
-from burgers_postprocess import BurgersPostProcessor
-from burgers_trotter import compute_error
-from q8020_cfd_metautil.solverfw import Grid1D
-
+from lib_fd import compute_error
+from lib_fw import BurgersConfig, run_simulation_fw
+from lib_postprocess import BurgersPostProcessor
 
 # Preferred steps-per-segment for --auto-cadence (matches the q=5/n_steps=98
 # design point of 7); the actual value is the nearest divisor of n_steps.
@@ -146,8 +125,8 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   python burgers_solver.py --q 3 --method shift --n-steps 10
-  python burgers_solver.py --q 3 --method quantum_exact --n-steps 5 --nu 1e-4
-  python burgers_solver.py --q 3 --method quantum_circuit --trotter-order 2 --n-steps 5
+  python burgers_solver.py --q 6 --method cole_hopf_circuit --n-steps 100
+  python burgers_solver.py --q 6 --method qlbm_circuit --n-steps 100
 """)
     add_standard_quantum_args(parser)
 
@@ -273,32 +252,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--method", type=str, default="shift",
         choices=[
-            "shift", "ftcs_reference", "quantum_exact", "quantum_circuit",
-            "mps", "tebd", "tebd_circuit", "cole_hopf",
-            "cole_hopf_circuit", "lbm", "qlbm_circuit",
-            "qlbm_circuit_hybrid", "qlbm_circuit_linear", "direct_lcu",
+            "shift", "ftcs_reference", "cole_hopf_circuit", "lbm",
+            "qlbm_circuit",
         ],
         help=(
             "Evolution method.  Classical: shift (FTCS on the q-grid), "
             "ftcs_reference (resolved FTCS on a >= --ref-points grid, "
             "subsampled back to the q-grid -- the shared classical "
-            "reference, run as its own case), tebd, cole_hopf, lbm "
-            "(D1Q3 -- ignores --shots).  Hybrid: quantum_exact, "
-            "quantum_circuit, mps, qlbm_circuit_hybrid (alias "
-            "qlbm_circuit, pending the pure-quantum QALB).  "
-            "Pure-quantum: cole_hopf_circuit.  See OVERVIEW §2 for the full "
+            "reference, run as its own case), lbm (D1Q3 -- ignores "
+            "--shots).  Pure-quantum: cole_hopf_circuit, qlbm_circuit "
+            "(QALB, Phase 2).  See OVERVIEW §2 for the full "
             "classification."
         ),
-    )
-    parser.add_argument(
-        "--propagator", type=str, default="qft-diagonal",
-        choices=["qft-diagonal", "dense-block", "lcu"],
-        help="Heat propagator variant (cole_hopf_circuit only)",
-    )
-    parser.add_argument(
-        "--encoding", type=str, default="binary",
-        choices=["binary", "gray"],
-        help="State encoding (cole_hopf_circuit only)",
     )
     parser.add_argument(
         "--sign-recovery", type=str, default="none",
@@ -307,26 +272,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--trotter-order", type=int, default=1,
-        help="Suzuki-Trotter order (quantum_circuit only)",
-    )
-    parser.add_argument(
-        "--trotter-reps", type=int, default=1,
-        help="Trotter repetitions (quantum_circuit only)",
-    )
-    parser.add_argument(
-        "--splitting", type=str, default="lie",
-        choices=["lie", "strang"],
-        help="Operator splitting for tebd_circuit: lie (Lie-Trotter) or strang (Strang/symmetric)",
+        help="Suzuki-Trotter order (qlbm_circuit/QALB collision synthesis)",
     )
 
     # MPS parameters
     parser.add_argument(
         "--bond-dim", type=int, default=None,
-        help="MPS bond dimension (None=full, mps method only)",
-    )
-    parser.add_argument(
-        "--mps-threshold", type=float, default=0.0,
-        help="MPS singular value truncation threshold (mps method only)",
+        help="MPS bond dimension (None=full, cole_hopf_circuit only)",
     )
 
     # Shots post-processing
@@ -355,10 +307,6 @@ if __name__ == "__main__":
             "just records metrics unavailable.  0 = uncapped (let it run as "
             "long as needed; good for a dedicated metrics pass)."
         ),
-    )
-    parser.add_argument(
-        "--lcu-taylor-order", type=int, default=4,
-        help="Taylor truncation order for LCU propagator",
     )
     parser.add_argument(
         "--qalb-collision-trotter-reps", type=int, default=0,
@@ -594,9 +542,7 @@ if __name__ == "__main__":
         classical_reference=args.classical_reference,
         analytic_reference=args.analytic_reference,
         trotter_order=args.trotter_order,
-        trotter_reps=args.trotter_reps,
         bond_dim=args.bond_dim,
-        mps_threshold=args.mps_threshold,
         shots=args.shots,
         backend_name=args.backend,
         backend_type=args.backend_type,
@@ -605,14 +551,10 @@ if __name__ == "__main__":
         seed=args.seed,
         t1=args.t1, t2=args.t2,
         sign_recovery=args.sign_recovery,
-        splitting=args.splitting,
-        propagator=args.propagator,
-        encoding=args.encoding,
         evolution_mode=args.evolution_mode,
         segment_size=args.segment_size,
         metric_transpile_timeout=args.metric_transpile_timeout,
         phi_modes=args.phi_modes,
-        taylor_order=args.lcu_taylor_order,
         fock_qubits=args.fock_qubits,
         qalb_collision_trotter_reps=args.qalb_collision_trotter_reps,
         readout=args.readout,

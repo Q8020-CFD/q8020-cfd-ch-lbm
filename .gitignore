@@ -226,3 +226,8 @@ __marimo__/
 # Scratch / debug JSON outputs (use *.scratch.json for ad-hoc dumps)
 *.scratch.json
 scratch_*.json
+
+# Solver metadata fragments dumped into the tree by an ad-hoc run without
+# --outdir (real sweep output lives under ~/q8020, not here)
+q8020_*.json
+q8020_*.txt

@@ -14,13 +14,12 @@ Sim-testable end to end with no IBM credentials:
     python burgers_ch_hw_runner.py --case smooth --target sim --dry-run
     python burgers_ch_hw_runner.py --case smooth --target sim \\
         --backend-name fake_sherbrooke --measure-mitigation
-
-See docs/archive/F12-HARDWARE-RUNNER-SPEC.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -28,16 +27,38 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-# Local src modules (burgers_*).  The package layout puts these alongside
-# this file; the solver runs them the same way.
-from burgers_classical import initial_condition_sine, solve_burgers
-from burgers_cole_hopf import cole_hopf_inverse
-from burgers_cole_hopf_circuit import run_cole_hopf_circuit_simulation
-
+from qiskit_ibm_runtime import Session
+from q8020_cfd_metautil.meta_fragment import (
+    make_backend_meta,
+    make_case_meta,
+    make_code_meta,
+    make_experiment_meta,
+    write_analysis,
+    write_artifacts,
+    write_backend,
+    write_case,
+    write_code,
+    write_experiment,
+    write_results,
+)
 from q8020_cfd_qutil.backend import get_backend
 from q8020_cfd_qutil.circuit import transpile_circuit
+from q8020_cfd_qutil.job import get_job_result
 
+# Local src library modules (lib_*).  The package layout puts these
+# alongside this file; the solver runs them the same way.
+from lib_classical import initial_condition_sine, solve_burgers
+from lib_cole_hopf import (
+    _should_center,
+    cole_hopf_forward,
+    cole_hopf_forward_centered,
+    log_phi_to_normalized_psi,
+)
+from lib_cole_hopf_circuit import (
+    build_segment_circuit,
+    run_cole_hopf_circuit_simulation,
+)
+from lib_mps import normalize_state
 
 # ---------------------------------------------------------------------------
 # Cases: parameters mirrored verbatim from the q4 hardware-probe TOMLs
@@ -111,7 +132,6 @@ def open_session(backend: Any, target: str, use_session: bool):
     """
     if target not in ("hardware", "local") or not use_session:
         return None
-    from qiskit_ibm_runtime import Session
     return Session(backend=backend)
 
 
@@ -124,15 +144,6 @@ def dry_run_transpile(case: dict[str, Any], backend: Any,
 
     Reusing build_segment_circuit guarantees the reported cost matches what
     actually executes -- no duplicated prep/heat/compose logic to drift."""
-    from burgers_cole_hopf import (
-        cole_hopf_forward, log_phi_to_normalized_psi,
-        cole_hopf_forward_centered, _should_center,
-    )
-    from burgers_cole_hopf_circuit import (
-        build_segment_circuit, permute_to_encoding,
-    )
-    from burgers_mps import normalize_state
-
     u0, x, dt, nu = build_inputs(case)
     dx = x[1] - x[0]
     q = case["q"]
@@ -147,12 +158,11 @@ def dry_run_transpile(case: dict[str, Any], backend: Any,
     else:
         phi0 = cole_hopf_forward(u0, dx, nu)
         psi0 = phi0 / float(np.linalg.norm(phi0))
-    psi0 = permute_to_encoding(psi0, q, "binary")
     psi_current, _ = normalize_state(psi0)
 
     raw_qc, total_q, _n_bond, _n_heat_anc = build_segment_circuit(
-        psi_current, q, nu, dt, seg, L_box, case["bc"], case["propagator"],
-        bond_dim=case["bond_dim"], encoding="binary",
+        psi_current, q, nu, dt, seg, L_box, case["bc"],
+        bond_dim=case["bond_dim"],
     )
 
     qc_t, info = transpile_circuit(raw_qc, backend,
@@ -203,10 +213,6 @@ def write_movie_series(parent: Path, method: str, x: np.ndarray,
 
     Each series lives in its own subdir so the movie postproc, pointed at
     *parent* via --sweep-dir, discovers them as separate case dirs."""
-    from q8020_cfd_metautil.meta_fragment import (
-        make_experiment_meta, make_case_meta, write_experiment,
-        write_case, write_artifacts,
-    )
     cd = parent / method
     cd.mkdir(parents=True, exist_ok=True)
     write_experiment(cd, make_experiment_meta(name=f"ch_hw_{method}"))
@@ -220,7 +226,7 @@ def write_movie_series(parent: Path, method: str, x: np.ndarray,
     write_artifacts(cd, {
         "grid": x.tolist(),
         "solution_steps": {
-            str(s): np.asarray(v).real.tolist()
+            str(s): np.real(np.asarray(v)).tolist()
             for s, v in sol_by_step.items()
         },
     })
@@ -257,12 +263,6 @@ def write_metadata(outdir: Path, case_name: str, case: dict[str, Any],
                    wall_s: float) -> None:
     """Write the q8020 metadata bundle via metautil writers so output is
     sweep/harvest/postproc compatible."""
-    from q8020_cfd_metautil.meta_fragment import (
-        make_experiment_meta, make_case_meta, make_code_meta,
-        make_backend_meta, write_experiment, write_case, write_code,
-        write_backend, write_results, write_analysis,
-    )
-
     exp = make_experiment_meta(name=f"ch_hw_{case_name}")
     write_experiment(outdir, exp)
     write_case(outdir, make_case_meta(
@@ -332,7 +332,6 @@ def write_metadata(outdir: Path, case_name: str, case: dict[str, Any],
     # on a harvest hiccup.
     if args.target == "hardware":
         try:
-            from q8020_cfd_qutil.job import get_job_result
             harvest = []
             for rec in seg_records:
                 jid = rec.get("job_id")
@@ -518,7 +517,6 @@ def main() -> int:
     if args.dry_run:
         print("[ch_hw] --dry-run: stopping before execution.",
               file=sys.stderr, flush=True)
-        import json
         print(json.dumps(dry, indent=2, default=str))
         return 0
 
@@ -526,7 +524,6 @@ def main() -> int:
         args.measure_mitigation, args.dynamical_decoupling)
 
     u0, x, dt, nu = build_inputs(case)
-    dx = x[1] - x[0]
 
     # A held Session lets the N serial segments share one queue slot, which
     # matters on a paid device. It is NOT a correctness requirement: the
@@ -554,10 +551,10 @@ def main() -> int:
     def _run() -> tuple[list[np.ndarray], list[dict[str, Any]]]:
         return run_cole_hopf_circuit_simulation(
             u0, x, nu, dt, case["n_steps"],
-            bc=case["bc"], propagator=case["propagator"],
+            bc=case["bc"],
             snapshot_interval=case["save_every"],
             shots=args.shots, bond_dim=case["bond_dim"],
-            encoding="binary", backend=backend,
+            backend=backend,
             backend_type=ch_backend_type,
             backend_name=args.backend_name,
             optimization_level=args.optimization_level, seed=args.seed,

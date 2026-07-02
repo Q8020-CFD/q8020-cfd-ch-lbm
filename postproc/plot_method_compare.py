@@ -15,6 +15,7 @@ from collections import Counter
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use('Agg')
 
 import matplotlib.animation as manimation
@@ -25,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from q8020_cfd_metautil.harvest import harvest_metadata
 from q8020_cfd_metautil.metakeys import _walk_case_dirs
-
 
 # ── helpers ───────────────────────────────────────────────────────────
 

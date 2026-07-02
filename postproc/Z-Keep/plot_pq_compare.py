@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use('Agg')
 
 import matplotlib.animation as manimation
@@ -149,7 +150,7 @@ def main() -> None:
     q = int(ref_params.get('q', 0)) or int(np.log2(len(x)))
 
     # Compute resolved classical FTCS reference.
-    from burgers_classical import solve_burgers_reference_coarse_ic
+    from lib_classical import solve_burgers_reference_coarse_ic
     u0 = None
     for label, (xg, frames, _) in datasets.items():
         if 0 in frames:

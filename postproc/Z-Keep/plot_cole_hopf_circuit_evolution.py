@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use('Agg')
 
 import matplotlib.animation as manimation
@@ -162,10 +163,11 @@ def main() -> None:
     frames_q = [np.array(sol_steps[k]) for k in step_keys]
 
     # Recompute classical FTCS + Cole-Hopf MPS for per-step overlay
-    from burgers_classical import (
-        solve_burgers_reference_coarse_ic, source_term_sine,
+    from lib_classical import (
+        solve_burgers_reference_coarse_ic,
+        source_term_sine,
     )
-    from burgers_cole_hopf import run_cole_hopf_simulation
+    from lib_cole_hopf import run_cole_hopf_simulation
 
     dt = float(anchor_meta.get('dt', 0.0))
     nu = float(anchor_meta.get('nu', 1e-2))

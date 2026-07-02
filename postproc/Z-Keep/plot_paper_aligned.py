@@ -11,6 +11,7 @@ Two invocation modes:
 """
 
 import matplotlib
+
 matplotlib.use('Agg')
 
 import argparse
@@ -23,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import matplotlib.pyplot as plt
 import numpy as np
-
 from q8020_cfd_metautil.harvest import harvest_metadata
 from q8020_cfd_metautil.metakeys import _walk_case_dirs
 
