@@ -853,21 +853,17 @@ hardware without per-method code changes.
 
 ### 8.6 Standalone tooling (outside the framework loop)
 
-Two scripts sit alongside the solver but are not `--method`s:
-
-- **`burgers_ch_hw_runner.py`** (F12) — a standalone driver that runs
-  the Cole–Hopf *measure-reprepare* segment loop on sim, a fake backend,
-  or real IBM hardware, with TREX measurement mitigation and dynamical
-  decoupling. It reuses `run_cole_hopf_circuit_simulation` unchanged; the
-  only solver-side hook is the opt-in `allow_hardware` kwarg. The
-  segments are intrinsically serial (segment `k+1` is built from segment
-  `k`'s measured counts), so on hardware they are wrapped in one held
-  `Session`. It carries its own `CASES` dict (`shock`, `smooth`,
-  `smooth_stunt`) and writes per-segment job-id / quantum-seconds audit
-  metadata. Sim-testable end-to-end with no IBM credentials.
-- **`check_ibm_conn.py`** — a read-only IBM Quantum connectivity probe
-  that authenticates through the same `q8020_cfd_qutil.backend.get_service`
-  path as a real run and lists operational backends. No solving.
+`burgers_ch_hw_runner.py` (F12) sits alongside the solver but is not a
+`--method` — a standalone driver that runs the Cole–Hopf
+*measure-reprepare* segment loop on sim, a fake backend, or real IBM
+hardware, with TREX measurement mitigation and dynamical decoupling. It
+reuses `run_cole_hopf_circuit_simulation` unchanged; the only solver-side
+hook is the opt-in `allow_hardware` kwarg. The segments are intrinsically
+serial (segment `k+1` is built from segment `k`'s measured counts), so on
+hardware they are wrapped in one held `Session`. It carries its own
+`CASES` dict (`shock`, `smooth`, `smooth_stunt`) and writes per-segment
+job-id / quantum-seconds audit metadata. Sim-testable end-to-end with no
+IBM credentials.
 
 ---
 
@@ -916,7 +912,6 @@ q8020-cfd-ch-lbm/
     │                                # App C operator path + App B shots path
     ├── burgers_ch_hw_runner.py      # F12 standalone Cole–Hopf hardware
     │                                # runner (measure-reprepare on IBM QPU)
-    ├── check_ibm_conn.py            # IBM Quantum connectivity probe
     └── lib_postprocess.py           # output writers, q8020 metrics dump
 ```
 
