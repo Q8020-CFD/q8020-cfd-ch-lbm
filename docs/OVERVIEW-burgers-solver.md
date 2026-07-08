@@ -1,7 +1,7 @@
 # Quantum Methods for the 1-D Viscous Burgers Equation
 ## A technical reference for the `q8020-cfd-ch-lbm` solver
 
-*May 2026 — LLM generated, human edited.*
+*LLM generated, human edited.*
 
 ---
 
