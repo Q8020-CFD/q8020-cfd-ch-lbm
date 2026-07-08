@@ -871,15 +871,6 @@ IBM credentials.
 
 ```
 q8020-cfd-ch-lbm/
-├── postproc/                        # q8020 postproc plotters (§10.1)
-│   ├── plot_circuit_resources_bakeoff.py
-│   ├── plot_cost_scaling.py
-│   ├── plot_dataset_movie.py
-│   ├── plot_method_compare.py       # FTCS vs Cole–Hopf vs LBM animation
-│   ├── plot_regime_crossover.py
-│   ├── plot_regime_pair.py
-│   ├── plot_seg_depth_tradeoff.py
-│   └── Z-Keep/                      # retained older plotters
 ├── tests/                           # test_cole_hopf_circuit, test_qalb_circuit,
 │                                    # test_shots_backend
 └── src/
@@ -914,6 +905,16 @@ q8020-cfd-ch-lbm/
     │                                # runner (measure-reprepare on IBM QPU)
     └── lib_postprocess.py           # output writers, q8020 metrics dump
 ```
+
+The q8020 postproc plotters (§10.1) no longer live in this repo; they were
+moved to the experiments repo alongside their datasets and outputs:
+`q8020-cfd-experiments/aux/burgers-ch-lbm-June2026/postproc/`
+(`plot_method_compare.py`, `plot_dataset_movie.py`,
+`plot_circuit_resources_bakeoff.py`, `plot_cost_scaling.py`,
+`plot_regime_crossover.py`, `plot_regime_pair.py`,
+`plot_seg_depth_tradeoff.py`, and `Z-Keep/`). They import
+`lib_cole_hopf_circuit` / `q8020_cfd_metautil` from the ch-lbm venv, so run
+them with this repo's `.venv/bin/python`.
 
 Everything the doc's earlier revisions attributed to `burgers_nonlinear.py`,
 `burgers_trotter.py`, `burgers_mpo.py`, `burgers_tebd.py`, `burgers_lcu.py`,
@@ -955,7 +956,8 @@ representative Cole–Hopf circuit case (unforced, shots, on a simulator):
 "--backend-type"  = "sim"
 "--seed"          = 42
 "--save-every"    = 1
-_group_postproc = "python ./postproc/plot_method_compare.py"
+_group_postproc = "python \
+  ../q8020-cfd-experiments/aux/burgers-ch-lbm-June2026/postproc/plot_method_compare.py"
 ```
 
 The sweeper converts this to a CLI invocation of `burgers_solver.py`
