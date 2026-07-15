@@ -17,13 +17,13 @@ dependencies = [
     "pytest",
     "ruff",
     "q8020_cfd_metautil @ git+https://github.com/Q8020-CFD/q8020-cfd-metautil.git",
-    "q8020_cfd_qutil @ git+https://github.com/Q8020-CFD/q8020-cfd-qutil.git",
+    "q8020_backend_utils[qiskit] @ git+https://github.com/Q8020-CFD/q8020-backend-utils.git",
 ]
 
 # for devs of the tooling
 [tool.uv.sources]
 q8020_cfd_metautil = { path = "../q8020-cfd-metautil", editable = true }
-q8020_cfd_qutil = { path = "../q8020-cfd-qutil", editable = true }
+q8020_backend_utils = { path = "../q8020-backend-utils", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

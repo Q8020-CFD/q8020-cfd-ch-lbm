@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import numpy as np
 
 from lib_cole_hopf_circuit import run_cole_hopf_circuit_simulation
-from q8020_cfd_qutil.backend import get_backend
+from q8020_backend_utils.ibm.backend import get_backend
 
 
 def _make_ic(q: int = 3):

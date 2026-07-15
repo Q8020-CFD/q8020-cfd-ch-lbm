@@ -58,7 +58,7 @@ from qiskit.circuit.library import (
 from qiskit.quantum_info import Operator, SparsePauliOp
 from qiskit.synthesis import LieTrotter, SuzukiTrotter
 from qiskit_aer import AerSimulator
-from q8020_cfd_qutil.circuit import (
+from q8020_backend_utils.ibm.circuit import (
     circuit_stats_in_basis,
     execute_circuit_counts,
     transpile_circuit,

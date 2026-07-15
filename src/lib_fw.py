@@ -20,7 +20,7 @@ from q8020_cfd_metautil.solverfw import (
     SpatialOperator,
     TimeIntegrator,
 )
-from q8020_cfd_qutil.backend import get_backend
+from q8020_backend_utils.ibm.backend import get_backend
 
 from lib_cole_hopf_circuit import run_cole_hopf_circuit_simulation
 from lib_fd import compute_rhs_shift, shift_euler_step

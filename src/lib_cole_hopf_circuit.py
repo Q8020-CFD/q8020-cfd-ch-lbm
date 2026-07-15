@@ -20,14 +20,14 @@ from qiskit import ClassicalRegister, QuantumCircuit
 from qiskit import transpile as _qiskit_transpile
 from qiskit.circuit.library import QFTGate, RYGate, UnitaryGate
 from qiskit.quantum_info import Statevector
-from q8020_cfd_qutil.circuit import (
+from q8020_backend_utils.ibm.circuit import (
     DEFAULT_METRIC_BASIS,
     execute_circuit_counts,
     get_circuit_info,
     safe_circuit_stats_in_basis,
     transpile_circuit,
 )
-from q8020_cfd_qutil.job import submit_job
+from q8020_backend_utils.ibm.job import submit_job
 
 from lib_cole_hopf import (
     _should_center,
