@@ -13,10 +13,13 @@ from typing import Any, cast
 
 import numpy as np
 from q8020_cfd_metautil.solverfw import (
+    ContainerIntegrator,
+    ContainerResult,
     DenseState,
     ForwardEuler,
     Grid1D,
     MainLoop,
+    ProblemTransform,
     SolverConfig,
     SpatialOperator,
     TimeIntegrator,
@@ -224,17 +227,47 @@ class QALBIntegrator(_DelegatingIntegrator):
         )
 
 
-class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
-    """Cole-Hopf circuit (multi-step, owns its loop)."""
+class ColeHopfTransform(ProblemTransform):
+    """Named Cole-Hopf change-of-variables (u <-> phi <-> psi).
+
+    The container applies it internally (its inverse is entangled with the
+    circuit readout, so it cannot be a MainLoop-level bracket), but naming
+    it as a ProblemTransform makes it a recorded slot in code.chain rather
+    than logic buried inside the delegating step.
+    """
+
+    def __init__(self, phi_modes: int = 0) -> None:
+        self.phi_modes = phi_modes
+
+    def forward(self, u, grid, config):
+        from lib_cole_hopf import cole_hopf_forward
+        phi = cole_hopf_forward(u, grid.dx, config.nu)
+        return phi, {"nu": config.nu, "dx": grid.dx}
+
+    def inverse(self, v, carry, grid, config):
+        from lib_cole_hopf import cole_hopf_inverse
+        return cole_hopf_inverse(
+            v, carry["dx"], carry["nu"], bc=grid.bc,
+        )
+
+
+class ColeHopfCircuitIntegrator(ContainerIntegrator):
+    """Cole-Hopf circuit: a container that owns its multi-step loop and its
+    named sub-plugins (transform / encode / backend / readout).
+
+    Promoted from the delegating idiom to a ContainerIntegrator (SPEC v2b
+    §2b.6): MainLoop drives it via run_all(); its internals are recorded in
+    code.chain instead of smuggled through sentinel metric keys.
+    """
 
     def __init__(self, backend: Any = None) -> None:
         self.backend = backend
+        self.transform = ColeHopfTransform()
 
-    def _run_all(self, state, grid, config, dt):
+    def run_all(self, state, spatial_op, grid, config) -> ContainerResult:
         u0 = state.to_dense()
-        source_fn = None
-        if hasattr(config, "_source_fn"):
-            source_fn = config._source_fn
+        source_fn = getattr(config, "_source_fn", None)
+        self.transform = ColeHopfTransform(phi_modes=config.phi_modes)
 
         if config.shots > 0 and self.backend is None:
             self.backend = get_backend(
@@ -244,8 +277,9 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
                 coupling_map=config.coupling_map,
             )
 
-        return run_cole_hopf_circuit_simulation(
-            u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
+        sols, mets = run_cole_hopf_circuit_simulation(
+            u0, grid.xc, config.nu, config.dt or 0.0, config.n_steps,
+            bc=grid.bc,
             shots=config.shots,
             snapshot_interval=max(1, config.save_every),
             bond_dim=config.bond_dim,
@@ -261,15 +295,43 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
             readout=getattr(config, "readout", "direct"),
             metric_transpile_timeout=config.metric_transpile_timeout,
         )
+        return ContainerResult(solutions=sols, step_metrics=mets)
+
+    def code_chain(self, config) -> dict:
+        """The recorded plugin chain for this run (SPEC v2b §2b.3)."""
+        from q8020_cfd_metautil.meta_fragment import chain_entry, make_chain
+        readout_plugin = (
+            "statevector_project" if config.shots == 0
+            else "counts_marginalize"
+        )
+        return make_chain(
+            transform=chain_entry(
+                "transform", "cole_hopf", {"phi_modes": config.phi_modes},
+            ),
+            encode=chain_entry(
+                "encode", "mps_staircase", {"bond_dim": config.bond_dim},
+            ),
+            solve=chain_entry(
+                "solve", "cole_hopf_circuit", kind="container",
+                knobs={"evolution_mode": config.evolution_mode},
+            ),
+            readout=chain_entry(
+                "readout", readout_plugin, {"shots": config.shots},
+            ),
+        )
 
 
 # -----------------------------------------------------------------------
 # Integrator registry
 # -----------------------------------------------------------------------
 
-# Methods that delegate their own multi-step loop.
+# Methods still on the legacy delegating idiom (own their loop, bypass
+# MainLoop via the sentinel-key shim). cole_hopf_circuit graduated to a
+# ContainerIntegrator (SPEC v2b) and is driven by MainLoop's container
+# branch; lbm / qlbm_circuit migrate incrementally (they need the
+# genuine_steps remap the container branch does not yet thread).
 _DELEGATING_METHODS = {
-    "cole_hopf_circuit", "lbm", "qlbm_circuit",
+    "lbm", "qlbm_circuit",
 }
 
 
@@ -317,7 +379,8 @@ def run_simulation_fw(
     spatial_op = ShiftFD()
     integrator = make_integrator(config)
 
-    # Delegating methods run their own loop internally.
+    # Legacy delegating methods (lbm / qlbm_circuit): run their own loop
+    # via the sentinel-key shim until they migrate to ContainerIntegrator.
     if config.method in _DELEGATING_METHODS:
         _, result_metrics = integrator.step(
             state, spatial_op, grid, config, config.dt or 0.0,
@@ -327,7 +390,8 @@ def run_simulation_fw(
         genuine = result_metrics.get("_delegated_genuine_steps")
         return sols, mets, genuine
 
-    # Standard per-step methods: use MainLoop.
+    # Per-step methods and ContainerIntegrators both go through MainLoop
+    # (it detects a ContainerIntegrator and drives run_all() once).
     loop = MainLoop()
     solutions, all_metrics = loop.run(
         config, grid, state, spatial_op, integrator,
