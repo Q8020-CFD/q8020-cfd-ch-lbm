@@ -280,9 +280,6 @@ class BurgersPostProcessor(PostProcessor):
             )
             # qlbm-specific costs broken out so the total is fully
             # accounted (zero for methods that don't use them).
-            analysis_data["total_sign_recovery_time"] = sum(
-                m.get("sign_recovery_time_s", 0) for m in step_metrics
-            )
             analysis_data["total_metric_transpile_time"] = sum(
                 m.get("metric_transpile_time_s", 0) for m in step_metrics
             )
@@ -308,30 +305,6 @@ class BurgersPostProcessor(PostProcessor):
                 if gate_dicts
                 else None
             )
-            # Sign-recovery (qlbm Hadamard-test) circuit cost, reported
-            # per bin circuit and as the honest total across all bins
-            # (n_bins per step = n_circuits - 1, the main step circuit).
-            sr_depths = [
-                m["sign_recovery_depth_per_circuit"] for m in step_metrics
-                if m.get("sign_recovery_depth_per_circuit") is not None
-            ]
-            analysis_data["avg_sign_recovery_depth_per_circuit"] = (
-                sum(sr_depths) / len(sr_depths) if sr_depths else None
-            )
-            sr_cx = [
-                m["sign_recovery_gate_counts_per_circuit"].get("cx", 0)
-                for m in step_metrics
-                if m.get("sign_recovery_gate_counts_per_circuit")
-            ]
-            analysis_data["avg_sign_recovery_cx_per_circuit"] = (
-                sum(sr_cx) / len(sr_cx) if sr_cx else None
-            )
-            analysis_data["total_sign_recovery_cx"] = sum(
-                m["sign_recovery_gate_counts_per_circuit"].get("cx", 0)
-                * max(m.get("n_circuits", 1) - 1, 0)
-                for m in step_metrics
-                if m.get("sign_recovery_gate_counts_per_circuit")
-            )
             nqs = [nq for _, _, nq in circ if nq is not None]
             analysis_data["n_qubits"] = nqs[0] if nqs else None
             # Coverage: how many iterations actually yielded circuit
@@ -340,9 +313,6 @@ class BurgersPostProcessor(PostProcessor):
                 1 for d, _, _ in circ if d is not None
             )
             analysis_data["circuit_metrics_n_total"] = len(circ)
-            analysis_data["sign_recovery"] = step_metrics[0].get(
-                "sign_recovery", "none",
-            )
             analysis_data["per_step_metrics"] = step_metrics
         write_analysis(outdir, analysis_data, experiment_id=exp_id)
 

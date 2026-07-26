@@ -14,6 +14,7 @@ from typing import Any, cast
 import numpy as np
 from q8020_cfd_metautil.solverfw import (
     DenseState,
+    ForwardEuler,
     Grid1D,
     MainLoop,
     SolverConfig,
@@ -23,7 +24,7 @@ from q8020_cfd_metautil.solverfw import (
 from q8020_backend_utils.ibm.backend import get_backend
 
 from lib_cole_hopf_circuit import run_cole_hopf_circuit_simulation
-from lib_fd import compute_rhs_shift, shift_euler_step
+from lib_fd import compute_rhs_shift
 from lib_lbm import run_lbm_simulation
 from lib_qalb_circuit import run_qalb_simulation
 
@@ -109,21 +110,12 @@ class ShiftFD(SpatialOperator):
 # -----------------------------------------------------------------------
 
 
-class ShiftEulerIntegrator(TimeIntegrator):
-    """Classical forward-Euler with shift-operator FD."""
-
-    def step(self, state, spatial_op, grid, config, dt, t=0.0):
-        grid = cast(Grid1D, grid)
-        config = cast(BurgersConfig, config)
-        u = state.to_dense()
-        g = None
-        source_fn = getattr(config, "_source_fn", None)
-        if source_fn:
-            g = source_fn(grid.xc, t)
-        u_new, metrics = shift_euler_step(
-            u, grid.dx, dt, config.nu, g, bc=grid.bc,
-        )
-        return DenseState(u_new), metrics
+# The `shift` method is plain forward-Euler on ShiftFD.compute_rhs
+# (u_new = u + dt*rhs), which is exactly the framework's ForwardEuler. We
+# use it directly rather than a bespoke integrator, so ShiftFD.compute_rhs
+# is the single source of the stepping physics (it was previously dead --
+# the old ShiftEulerIntegrator called shift_euler_step directly and never
+# touched the SpatialOperator seam).
 
 
 # -----------------------------------------------------------------------
@@ -206,6 +198,20 @@ class QALBIntegrator(_DelegatingIntegrator):
 
         u0 = state.to_dense()
         source_fn = getattr(config, "_source_fn", None)
+
+        # Honor the CLI backend config (--backend/--backend-type/--t1/--t2):
+        # build the backend from config when shots are requested, matching
+        # ColeHopfCircuitIntegrator. Previously QALB was constructed with
+        # backend=None and always fell back to a bare AerSimulator(), so the
+        # backend flags were silently dropped for qlbm_circuit.
+        if config.shots > 0 and self.backend is None:
+            self.backend = get_backend(
+                name=config.backend_name,
+                backend_type=config.backend_type,
+                t1=config.t1, t2=config.t2,
+                coupling_map=config.coupling_map,
+            )
+
         return run_qalb_simulation(
             u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
             source_fn=source_fn,
@@ -274,7 +280,7 @@ def make_integrator(
     m = config.method
 
     if m == "shift":
-        return ShiftEulerIntegrator()
+        return ForwardEuler()
 
     if m == "cole_hopf_circuit":
         return ColeHopfCircuitIntegrator()

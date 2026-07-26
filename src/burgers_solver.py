@@ -267,8 +267,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--sign-recovery", type=str, default="none",
-        choices=["none", "classical_oracle", "hadamard_test", "dual_rail"],
-        help="Sign recovery strategy for shots>0 path (F9)",
+        choices=["none"],
+        help="Sign recovery strategy for shots>0 path. Only 'none' is "
+             "implemented; the classical_oracle / hadamard_test / dual_rail "
+             "options were never implemented and have been retired (QALB "
+             "reads out a signed observable; Cole-Hopf's phi>0 needs no "
+             "recovery).",
     )
     parser.add_argument(
         "--trotter-order", type=int, default=1,
