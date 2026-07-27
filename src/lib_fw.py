@@ -52,6 +52,7 @@ class BurgersConfig(SolverConfig):
     # Method-specific params
     trotter_order: int = 1
     bond_dim: int | None = None
+    use_mps_prep: bool = True
     shots: int = 0
     backend_name: str | None = None
     backend_type: str = "sim"
@@ -67,7 +68,6 @@ class BurgersConfig(SolverConfig):
     qalb_collision_trotter_reps: int = 0
     metric_transpile_timeout: float = 60.0
     phi_modes: int = 0
-    readout: str = "direct"
     shock_pct: float | None = None
 
     def describe(self) -> dict[str, Any]:
@@ -243,6 +243,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
             shots=config.shots,
             snapshot_interval=max(1, config.save_every),
             bond_dim=config.bond_dim,
+            use_mps_prep=config.use_mps_prep,
             backend=self.backend,
             backend_type=config.backend_type,
             backend_name=config.backend_name,
@@ -252,7 +253,6 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
             evolution_mode=config.evolution_mode,
             segment_size=config.segment_size,
             phi_modes=config.phi_modes,
-            readout=getattr(config, "readout", "direct"),
             metric_transpile_timeout=config.metric_transpile_timeout,
         )
 

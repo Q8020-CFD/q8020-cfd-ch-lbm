@@ -14,6 +14,7 @@ import os
 
 import numpy as np
 import pytest
+from scipy.linalg import expm
 
 # Ensure the solver package is importable
 sys.path.insert(
@@ -22,16 +23,14 @@ sys.path.insert(
 )
 
 from lib_classical import initial_condition_sine
-from lib_cole_hopf import (
-    build_heat_propagator,
-    cole_hopf_forward,
-)
+from lib_cole_hopf import cole_hopf_forward
 from lib_cole_hopf_circuit import (
     compute_theta_exact,
     build_conditional_ry,
     run_cole_hopf_circuit_sv,
     run_cole_hopf_circuit_simulation,
 )
+from lib_fd import shift_matrix
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -45,6 +44,89 @@ def _make_grid(q: int, bc: str = "periodic"):
         x = np.linspace(0, 1, N, endpoint=False)
     dx = x[1] - x[0]
     return x, dx, N
+
+
+def build_laplacian_dense(
+    N: int,
+    dx: float,
+    bc: str = "periodic",
+) -> np.ndarray:
+    """Build the N x N Laplacian matrix using shift operators.
+
+    L = (S+ + S- - 2I) / dx^2
+
+    bc='periodic': wrapping shift operators (default).
+    bc='neumann' : zero-flux boundaries (phi_x = 0 at endpoints).
+    """
+    if bc == "periodic":
+        sp = shift_matrix(N, +1, bc="periodic")
+        sm = shift_matrix(N, -1, bc="periodic")
+        L = (sp + sm - 2.0 * np.eye(N)) / dx**2
+    elif bc == "neumann":
+        # Half-cell mirror BC: ghost u[-1]=u[0], u[N]=u[N-1].
+        # Boundary rows are [-1, 1, ...] and [..., 1, -1]; symmetric,
+        # row sums = 0, all eigenvalues <= 0.  Diagonalised by DCT-II.
+        L = np.zeros((N, N))
+        for i in range(N):
+            L[i, i] = -2.0
+            if i > 0:
+                L[i, i - 1] = 1.0
+            if i < N - 1:
+                L[i, i + 1] = 1.0
+        L[0, 0] = -1.0
+        L[N - 1, N - 1] = -1.0
+        L /= dx**2
+    else:
+        raise ValueError(f"Unknown bc: {bc!r}; expected 'periodic' or 'neumann'")
+    return L
+
+
+def build_heat_propagator(
+    N: int,
+    dx: float,
+    dt: float,
+    nu: float,
+    bc: str = "periodic",
+) -> np.ndarray:
+    """Build the dense heat-equation propagator exp(nu * L * dt).
+
+    This is a contraction (NOT unitary): eigenvalues in (0, 1].
+    Built once at setup and reused for every time step.
+    """
+    L = build_laplacian_dense(N, dx, bc=bc)
+    P = expm(nu * L * dt)
+    return P
+
+
+def reconstruct_from_mps(tensors: list[np.ndarray]) -> np.ndarray:
+    """Contract MPS site tensors back into a full state vector.
+
+    Contracts left to right: result[x1,x2,...,xq] = sum_j A^1 A^2 ... A^q
+    """
+    q = len(tensors)
+    # Start with the first tensor: shape (1, 2, d1)
+    result = tensors[0]  # (1, 2, d1)
+
+    for k in range(1, q):
+        # result: (1, 2^k, d_k)
+        # tensors[k]: (d_k, 2, d_{k+1})
+        # Contract over the bond dimension
+        d_left = result.shape[-1]
+        phys_left = result.shape[1]
+        A_k = tensors[k]  # (d_k, 2, d_{k+1})
+
+        # result reshaped: (phys_left, d_left)
+        # multiply: (phys_left, d_left) x (d_left, 2 * d_{k+1})
+        mat_left = result.reshape(-1, d_left)
+        mat_right = A_k.reshape(d_left, -1)
+        contracted = mat_left @ mat_right
+        # Now shape: (1 * phys_left, 2 * d_{k+1})
+        # which is (1, 2^(k+1), d_{k+1}) when reshaped
+        d_right = A_k.shape[2]
+        result = contracted.reshape(1, phys_left * 2, d_right)
+
+    # Final shape: (1, N, 1) -> (N,)
+    return result.reshape(-1)
 
 
 # ── 11.2  QFT-diagonal statevector ──────────────────────────────────
@@ -160,7 +242,6 @@ def test_mps_prep_used():
     """
     from lib_mps import (
         classical_to_mps, mps_to_circuit, normalize_state,
-        reconstruct_from_mps,
     )
     from qiskit.quantum_info import Statevector
 
@@ -293,7 +374,6 @@ def test_dct_matrix_matches_scipy():
 
 def test_dct_diagonalises_neumann_laplacian():
     """C @ L_neumann @ C.T is diagonal with the analytic eigenvalues."""
-    from lib_cole_hopf import build_laplacian_dense
     from lib_cole_hopf_circuit import (
         dct_matrix, neumann_laplacian_eigenvalues,
     )
@@ -316,7 +396,6 @@ def test_dct_diagonalises_neumann_laplacian():
 
 def test_heat_dct_full_evolution_q5():
     """q=5 multi-step DCT evolution matches dense Neumann propagator."""
-    from lib_cole_hopf import build_heat_propagator
     from lib_cole_hopf_circuit import run_cole_hopf_circuit_sv
 
     q, nu, n_steps = 5, 1e-2, 20
@@ -351,7 +430,6 @@ def test_qft_diagonal_dirichlet_dispatch():
     """propagator='qft-diagonal' + bc='dirichlet' runs and matches the
     dense Neumann-on-phi heat propagator end-to-end at q=4."""
     from scipy.linalg import expm as scipy_expm
-    from lib_cole_hopf import build_laplacian_dense
 
     q, nu = 4, 1e-2
     x, dx, N = _make_grid(q, bc="dirichlet")

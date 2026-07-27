@@ -62,7 +62,6 @@ class BurgersPostProcessor(PostProcessor):
 
         self.step_metrics: list[dict[str, Any]] = []
         self.solutions: list[np.ndarray] = []
-        self._latest_step = 0
 
     # ------------------------------------------------------------------
     # PostProcessor interface
@@ -72,7 +71,6 @@ class BurgersPostProcessor(PostProcessor):
         """Record per-step metrics."""
         if metrics:
             self.step_metrics.append(metrics)
-        self._latest_step = step
 
     def finalize(self, config, elapsed_s):
         """Called at the end of the main loop (no-op here; use

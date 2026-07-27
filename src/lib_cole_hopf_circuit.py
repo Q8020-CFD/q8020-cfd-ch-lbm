@@ -487,7 +487,6 @@ def build_segment_circuit(
     bc: str,
     bond_dim: int | None = None,
     use_mps_prep: bool = True,
-    t_start: float = 0.0,
 ) -> tuple[QuantumCircuit, int, int, int]:
     """Build one measure-reprepare segment circuit (prep + segment_size
     Trotter steps), composed and ready to transpile.
@@ -628,14 +627,12 @@ def _run_shots_measure_reprepare(
     for segment_idx in range(n_segments):
         t_segment = time.time()
         global_step_start = segment_idx * segment_size
-        t_start_segment = global_step_start * dt
 
         # 1-3. Build prep + evolution + compose (shared with the F12
         # dry-run so reported CX/depth matches what actually runs).
         raw_qc, total_q, n_bond, n_heat_anc = build_segment_circuit(
             psi_current, q, nu, dt, segment_size, L_box, bc,
             bond_dim=bond_dim, use_mps_prep=use_mps_prep,
-            t_start=t_start_segment,
         )
         # Construction wall time for this segment (prep + propagator
         # build + compose), measured from the segment start.
@@ -1063,298 +1060,6 @@ def _run_shots_batch(
     return results
 
 
-# ── F10-12: Hadamard-test-per-bin readout ───────────────────────────
-
-
-def _build_evolution_qc_unitary(
-    q: int,
-    nu: float,
-    dt: float,
-    n_steps: int,
-    L_box: float,
-    bc: str,
-) -> tuple[QuantumCircuit, int]:
-    """Build measurement-free n_steps evolution on q + n_steps*a qubits.
-
-    Each step uses a fresh ancilla register (no mid-circuit measure /
-    reset) so the resulting circuit is a unitary suitable for use
-    inside a Hadamard test.  Post-selecting all ancillas to |0> at
-    the end is mathematically equivalent to the per-step reset path.
-
-    Returns (qc, n_anc_per_step).
-    """
-    step0 = _build_step_sv(q, nu, dt, L_box, bc)
-
-    n_anc_per_step = step0.num_qubits - q
-    n_total = q + n_steps * n_anc_per_step
-    qc = QuantumCircuit(n_total, name="evolution_unitary")
-
-    for s in range(n_steps):
-        anc_start = q + s * n_anc_per_step
-        qubit_map = (
-            list(range(q))
-            + list(range(anc_start, anc_start + n_anc_per_step))
-        )
-        qc.compose(step0, qubits=qubit_map, inplace=True)
-
-    return qc, n_anc_per_step
-
-
-def hadamard_per_bin_circuit(
-    q: int,
-    prep_qc: QuantumCircuit,
-    n_bond: int,
-    evo_qc: QuantumCircuit,
-    n_anc_evo: int,
-    k: int,
-) -> QuantumCircuit:
-    """Hadamard test for Re(<k|U|psi0>) on basis index k.
-
-    Layout (qubit indices):
-      data:     0 .. q-1
-      bond:     q .. q + n_bond - 1            (state-prep ancillas)
-      evo_anc:  q + n_bond .. q + n_bond + n_anc_evo - 1
-      test:     last qubit
-
-    The inner unitary V = X_k * evo * prep is wrapped in a single
-    controlled gate whose control is the test qubit.  After two
-    Hadamards on the test qubit, the joint outcome statistics give
-
-        Re(psi_k) = P(test=0, data=0, bond=0, evo=0)
-                  - P(test=1, data=0, bond=0, evo=0)
-
-    where psi is the (unnormalised) post-selected amplitude vector.
-    The post-selection factor is absorbed naturally — no extra
-    sqrt(p_success) rescaling is needed.
-    """
-    n_inner = q + n_bond + n_anc_evo
-    n_total = n_inner + 1
-    test = n_total - 1
-
-    inner = QuantumCircuit(n_inner, name=f"W_k{k}")
-    inner.compose(
-        prep_qc, qubits=list(range(q + n_bond)), inplace=True,
-    )
-    evo_qubits = (
-        list(range(q))
-        + list(range(q + n_bond, q + n_bond + n_anc_evo))
-    )
-    inner.compose(evo_qc, qubits=evo_qubits, inplace=True)
-    for i in range(q):
-        if (k >> i) & 1:
-            inner.x(i)
-
-    qc = QuantumCircuit(n_total, n_total)
-    qc.h(test)
-    # annotated=True defers control synthesis: Qiskit's eager
-    # controlled-UCGate decomposition (_dec_ucg) trips a strict unitary
-    # check on the MPS-prep / block-encoded sub-gates, whereas Aer can
-    # simulate the annotated controlled operation directly.
-    controlled = inner.to_gate().control(1, annotated=True)
-    qc.append(controlled, [test] + list(range(n_inner)))
-    qc.h(test)
-    qc.measure(list(range(n_total)), list(range(n_total)))
-    return qc
-
-
-def extract_hadamard_per_bin_amplitudes(
-    counts_per_k: list[dict[str, int]],
-    q: int,
-    n_bond: int,
-    n_anc_evo: int,
-    shots: int,
-    phi_norm: float,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    """Reconstruct phi from per-bin Hadamard-test counts.
-
-    counts_per_k[k]: counts dict from running the k-th circuit.
-    Bitstring layout (Qiskit little-endian): bit 0 (rightmost char)
-    is data qubit 0; the leftmost char is the test qubit.  Returns
-    (phi_hat, info) where phi_hat is real-valued (phi_norm * Re psi_k)
-    and info carries aggregate diagnostics.
-    """
-    N = 1 << q
-    n_inner = q + n_bond + n_anc_evo
-    re_psi = np.zeros(N)
-    n_kept_total = 0
-    n_test_zero = 0
-    n_test_one = 0
-
-    for k, counts in enumerate(counts_per_k):
-        n0 = 0
-        n1 = 0
-        for bitstr, cnt in counts.items():
-            bits = bitstr.replace(" ", "")
-            if len(bits) < n_inner + 1:
-                continue
-            test_bit = int(bits[0])
-            data_bits = bits[-q:] if q > 0 else ""
-            anc_bits = bits[1:-q] if q > 0 else bits[1:]
-            data_idx = int(data_bits, 2) if data_bits else 0
-            if data_idx != 0:
-                continue
-            if not all(c == "0" for c in anc_bits):
-                continue
-            if test_bit == 0:
-                n0 += cnt
-            else:
-                n1 += cnt
-
-        denom = max(shots, 1)
-        re_psi[k] = (n0 - n1) / denom
-        n_kept_total += n0 + n1
-        n_test_zero += n0
-        n_test_one += n1
-
-    phi_hat = phi_norm * re_psi
-    info: dict[str, Any] = {
-        "n_kept_total": n_kept_total,
-        "n_test_zero": n_test_zero,
-        "n_test_one": n_test_one,
-        "p_kept_per_bin_mean": (
-            n_kept_total / (len(counts_per_k) * shots)
-            if counts_per_k and shots > 0 else 0.0
-        ),
-    }
-    return phi_hat, info
-
-
-def _run_shots_hadamard_per_bin(
-    psi0: np.ndarray,
-    q: int,
-    nu: float,
-    dt: float,
-    snap_steps: list[int],
-    L_box: float,
-    phi_norm: float,
-    bc: str,
-    shots: int,
-    bond_dim: int | None = None,
-    backend: Any = None,
-    backend_type: str = "sim",
-    backend_name: str | None = None,
-    optimization_level: int = 1,
-    seed: int | None = None,
-    use_mps_prep: bool = True,
-    metric_transpile_timeout: float = 60.0,
-) -> list[tuple[np.ndarray, dict[str, Any]]]:
-    """Hadamard-test-per-bin readout driver (F10-12).
-
-    For each snap_step s, builds N Hadamard-test circuits (one per
-    basis index k) wrapping the full state-prep + s-step evolution,
-    runs all of them, and reconstructs a real-valued phi_hat by
-    differencing test-ancilla outcomes per bin.
-
-    Aimed at the low-nu shots regime where direct amplitude readout
-    has poor signal-to-noise: the Hadamard test recovers Re(psi_k)
-    (signed) in linear shots per bin, at the cost of N circuits per
-    snap_step.
-    """
-    if backend_type == "hardware":
-        raise NotImplementedError(
-            "hadamard_per_bin readout: hardware backends not "
-            "supported yet (would need O(N) job submissions)."
-        )
-
-    N = 1 << q
-
-    psi_normed, _ = normalize_state(psi0)
-    if use_mps_prep:
-        tensors = classical_to_mps(
-            psi_normed, bond_dim=bond_dim, canonical="right",
-        )
-        prep_qc = mps_to_circuit(tensors)
-        n_bond = prep_qc.num_qubits - q
-    else:
-        prep_qc = QuantumCircuit(q, name="initialize_prep")
-        prep_qc.initialize(psi_normed.tolist(), range(q))
-        n_bond = 0
-
-    results: list[tuple[np.ndarray, dict[str, Any]]] = []
-
-    for s in snap_steps:
-        t_build = time.time()
-        evo_qc, _n_anc_per_step = _build_evolution_qc_unitary(
-            q, nu, dt, s, L_box, bc,
-        )
-        # _build_evolution_qc_unitary uses a fresh ancilla register per
-        # step, so the circuit carries s * per_step ancillas.  The
-        # Hadamard wrapper and the post-selection extractor need the
-        # TOTAL ancilla count (all must end in |0>), not the per-step one.
-        n_anc_evo = evo_qc.num_qubits - q
-        print(
-            f"[_run_shots_hadamard_per_bin] snap_step={s} "
-            f"q={q} n_bond={n_bond} n_anc_evo={n_anc_evo} "
-            f"building {N} Hadamard circuits ...",
-            file=sys.stderr, flush=True,
-        )
-
-        per_k_circs: list[QuantumCircuit] = []
-        for k in range(N):
-            qc_k = hadamard_per_bin_circuit(
-                q, prep_qc, n_bond, evo_qc, n_anc_evo, k,
-            )
-            per_k_circs.append(qc_k)
-        print(
-            f"[_run_shots_hadamard_per_bin] built {N} circuits in "
-            f"{time.time() - t_build:.1f}s",
-            file=sys.stderr, flush=True,
-        )
-
-        counts_per_k: list[dict[str, int]] = []
-        t_info_list: list[dict[str, Any]] = []
-        exec_info_list: list[dict[str, Any]] = []
-        t_run = time.time()
-        # NB: do NOT skip transpile here even on Aer+LCU.  The Hadamard
-        # wrapper uses an annotated controlled gate (control synthesis is
-        # deferred to avoid the UCGate unitary-check failure); Aer cannot
-        # assemble a raw AnnotatedOperation, so transpilation is required
-        # to lower it into concrete gates.
-        for k, qc_k in enumerate(per_k_circs):
-            qc_t, t_info = transpile_circuit(
-                qc_k, backend,
-                optimization_level=optimization_level,
-                seed_transpiler=seed,
-            )
-            counts, exec_info = execute_circuit_counts(
-                qc_t, backend, shots=shots, seed=seed,
-            )
-            counts_per_k.append(counts)
-            t_info_list.append(t_info)
-            exec_info_list.append(exec_info)
-            if (k + 1) % max(1, N // 8) == 0 or k == N - 1:
-                print(
-                    f"[_run_shots_hadamard_per_bin] snap_step={s} "
-                    f"bin {k + 1}/{N} elapsed="
-                    f"{time.time() - t_run:.1f}s",
-                    file=sys.stderr, flush=True,
-                )
-
-        phi_hat, agg = extract_hadamard_per_bin_amplitudes(
-            counts_per_k, q, n_bond, n_anc_evo, shots, phi_norm,
-        )
-
-        met: dict[str, Any] = {
-            "shots": shots,
-            "shots_per_bin": shots,
-            "n_bins": N,
-            "n_steps": s,
-            "step": s,
-            "readout": "hadamard_per_bin",
-            "n_kept_total": agg["n_kept_total"],
-            "n_test_zero": agg["n_test_zero"],
-            "n_test_one": agg["n_test_one"],
-            "p_kept_per_bin_mean": agg["p_kept_per_bin_mean"],
-            "p_success": agg["p_kept_per_bin_mean"],
-            "transpile_wall_total": sum(
-                ti.get("wall_time", 0.0) for ti in t_info_list
-            ),
-        }
-        results.append((phi_hat, met))
-
-    return results
-
-
 def run_cole_hopf_circuit_simulation(
     u0: np.ndarray,
     x: np.ndarray,
@@ -1375,7 +1080,6 @@ def run_cole_hopf_circuit_simulation(
     segment_size: int = 10,
     phi_modes: int = 0,
     use_mps_prep: bool = True,
-    readout: str = "direct",
     metric_transpile_timeout: float = 60.0,
     allow_hardware: bool = False,
     session: Any = None,
@@ -1464,33 +1168,7 @@ def run_cole_hopf_circuit_simulation(
         if n_steps not in snap_steps:
             snap_steps.append(n_steps)
 
-        if readout not in ("direct", "hadamard_per_bin"):
-            raise ValueError(
-                f"unknown readout={readout!r}; expected "
-                f"'direct' or 'hadamard_per_bin'"
-            )
-        if readout == "hadamard_per_bin" and (
-            evolution_mode == "measure_reprepare"
-        ):
-            raise NotImplementedError(
-                "hadamard_per_bin readout requires "
-                "evolution_mode=single (segmented v1 unsupported)"
-            )
-
-        if readout == "hadamard_per_bin":
-            batch_results = _run_shots_hadamard_per_bin(
-                psi0, q, nu, dt, snap_steps, L_box,
-                phi_norm,
-                bc=phi_bc,
-                shots=shots,
-                bond_dim=bond_dim,
-                backend=backend, backend_type=backend_type,
-                backend_name=backend_name,
-                optimization_level=optimization_level,
-                seed=seed,
-                use_mps_prep=use_mps_prep,
-            )
-        elif evolution_mode == "measure_reprepare":
+        if evolution_mode == "measure_reprepare":
             # Validate alignment
             if n_steps % segment_size != 0:
                 raise ValueError(

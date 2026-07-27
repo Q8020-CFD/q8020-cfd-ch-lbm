@@ -153,11 +153,6 @@ def encode_value(x: float, polys: list) -> np.ndarray:
     return np.array([_poly.polyval(x, polys[n]) for n in range(len(polys))])
 
 
-def decode_value(psi_reg: np.ndarray) -> float:
-    """Exact linear readout x = <1|psi>/<0|psi>  (Eq C20, P_1/P_0 = x)."""
-    return float((psi_reg[1] / psi_reg[0]).real)
-
-
 # ── D1Q3 collision (this repo's equilibrium) as flow generator ────────
 
 
@@ -209,42 +204,6 @@ def decode_cell(psi: np.ndarray, qc: int) -> np.ndarray:
     p = psi.reshape(d, d, d)
     z = p[0, 0, 0]
     return np.real(np.array([p[1, 0, 0] / z, p[0, 1, 0] / z, p[0, 0, 1] / z]))
-
-
-# ── Transpilable per-site collision circuit (block-encoded) ───────────
-
-
-def _sym_sqrt(A: np.ndarray) -> np.ndarray:
-    w, V = np.linalg.eigh(0.5 * (A + A.conj().T))
-    w = np.clip(w.real, 0.0, None)
-    return (V * np.sqrt(w)) @ V.conj().T
-
-
-def cell_collision_block_unitary(tau: float, qc: int,
-                                 collision_time: float) -> tuple[np.ndarray, float]:
-    """Sz-Nagy dilation of the per-site collision A = U_cell/alpha
-    (U_cell = exp(T*G), state independent, built once).  Returns (dilation
-    unitary on 3*qc+1 qubits, alpha).  Post-selecting the ancilla |0>
-    applies A; the scale 1/alpha cancels in the ratio readout."""
-    qop, D, _ = finite_position_ops(qc)
-    U_cell = expm(collision_time * collision_flow_generator(qop, D, tau))
-    alpha = float(np.linalg.norm(U_cell, 2)) * (1.0 + 1e-9)
-    A = U_cell / alpha
-    d3 = A.shape[0]
-    S = _sym_sqrt(np.eye(d3) - A @ A.conj().T)
-    T = _sym_sqrt(np.eye(d3) - A.conj().T @ A)
-    return np.block([[A, S], [T, -A.conj().T]]), alpha
-
-
-def cell_collision_circuit(tau: float, qc: int, collision_time: float):
-    """Per-site collision as a Qiskit circuit on 3*qc system + 1 ancilla.
-    System qubits 0..3qc-1 (the 3 density registers), ancilla = top qubit.
-    """
-    n_sys = 3 * qc
-    U, alpha = cell_collision_block_unitary(tau, qc, collision_time)
-    qc_circ = QuantumCircuit(n_sys + 1, name="qalb_collide")
-    qc_circ.append(UnitaryGate(U, label="A_blk"), range(n_sys + 1))
-    return qc_circ, alpha
 
 
 # ── App B bosonic encoding + Hermitised UNITARY collision (shots path) ─
@@ -314,15 +273,6 @@ def encode_cell_B(df3: np.ndarray, p: np.ndarray,
     for r in regs[1:]:
         out = np.kron(out, r)
     return out
-
-
-def decode_cell_B(psi: np.ndarray, q: np.ndarray) -> np.ndarray:
-    """Read each density as the normalised <q_i> (scale invariant, so the
-    deflation scalar cancels)."""
-    d = q.shape[0]
-    n = np.real(psi.conj() @ psi)
-    return np.array([np.real(psi.conj() @ _embed(q, i, d) @ psi) / n
-                     for i in range(3)])
 
 
 @lru_cache(maxsize=None)

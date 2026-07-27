@@ -137,37 +137,6 @@ def _mps_right_canonical(
     return tensors
 
 
-def reconstruct_from_mps(tensors: list[np.ndarray]) -> np.ndarray:
-    """Contract MPS site tensors back into a full state vector.
-
-    Contracts left to right: result[x1,x2,...,xq] = sum_j A^1 A^2 ... A^q
-    """
-    q = len(tensors)
-    # Start with the first tensor: shape (1, 2, d1)
-    result = tensors[0]  # (1, 2, d1)
-
-    for k in range(1, q):
-        # result: (1, 2^k, d_k)
-        # tensors[k]: (d_k, 2, d_{k+1})
-        # Contract over the bond dimension
-        d_left = result.shape[-1]
-        phys_left = result.shape[1]
-        A_k = tensors[k]  # (d_k, 2, d_{k+1})
-
-        # result reshaped: (phys_left, d_left)
-        # multiply: (phys_left, d_left) x (d_left, 2 * d_{k+1})
-        mat_left = result.reshape(-1, d_left)
-        mat_right = A_k.reshape(d_left, -1)
-        contracted = mat_left @ mat_right
-        # Now shape: (1 * phys_left, 2 * d_{k+1})
-        # which is (1, 2^(k+1), d_{k+1}) when reshaped
-        d_right = A_k.shape[2]
-        result = contracted.reshape(1, phys_left * 2, d_right)
-
-    # Final shape: (1, N, 1) -> (N,)
-    return result.reshape(-1)
-
-
 def site_tensor_to_unitary(
     A: np.ndarray,
     n_bond_qubits: int,

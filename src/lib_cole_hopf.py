@@ -38,9 +38,6 @@ References (the Cole-Hopf substitution):
 from __future__ import annotations
 
 import numpy as np
-from scipy.linalg import expm
-
-from lib_fd import shift_matrix
 
 # -------------------------------------------------------------------
 # Cole-Hopf transforms
@@ -252,59 +249,3 @@ def analytic_solution_cole_hopf(
     phi, phi_x = _phi_and_phi_x(x, t, coeffs, nu, L_box)
     return -2.0 * nu * phi_x / phi
 
-
-# -------------------------------------------------------------------
-# Heat-equation Laplacian and propagator
-# -------------------------------------------------------------------
-
-
-def build_laplacian_dense(
-    N: int,
-    dx: float,
-    bc: str = "periodic",
-) -> np.ndarray:
-    """Build the N x N Laplacian matrix using shift operators.
-
-    L = (S+ + S- - 2I) / dx^2
-
-    bc='periodic': wrapping shift operators (default).
-    bc='neumann' : zero-flux boundaries (phi_x = 0 at endpoints).
-    """
-    if bc == "periodic":
-        sp = shift_matrix(N, +1, bc="periodic")
-        sm = shift_matrix(N, -1, bc="periodic")
-        L = (sp + sm - 2.0 * np.eye(N)) / dx**2
-    elif bc == "neumann":
-        # Half-cell mirror BC: ghost u[-1]=u[0], u[N]=u[N-1].
-        # Boundary rows are [-1, 1, ...] and [..., 1, -1]; symmetric,
-        # row sums = 0, all eigenvalues <= 0.  Diagonalised by DCT-II.
-        L = np.zeros((N, N))
-        for i in range(N):
-            L[i, i] = -2.0
-            if i > 0:
-                L[i, i - 1] = 1.0
-            if i < N - 1:
-                L[i, i + 1] = 1.0
-        L[0, 0] = -1.0
-        L[N - 1, N - 1] = -1.0
-        L /= dx**2
-    else:
-        raise ValueError(f"Unknown bc: {bc!r}; expected 'periodic' or 'neumann'")
-    return L
-
-
-def build_heat_propagator(
-    N: int,
-    dx: float,
-    dt: float,
-    nu: float,
-    bc: str = "periodic",
-) -> np.ndarray:
-    """Build the dense heat-equation propagator exp(nu * L * dt).
-
-    This is a contraction (NOT unitary): eigenvalues in (0, 1].
-    Built once at setup and reused for every time step.
-    """
-    L = build_laplacian_dense(N, dx, bc=bc)
-    P = expm(nu * L * dt)
-    return P

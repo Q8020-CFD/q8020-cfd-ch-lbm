@@ -34,7 +34,9 @@ from lib_classical import (
     initial_condition_gaussian,
     initial_condition_multimode,
     initial_condition_sine,
+    make_reference_grid,
     solve_burgers,
+    solve_burgers_subsampled,
     source_term_sine,
 )
 from lib_cole_hopf import (
@@ -55,20 +57,6 @@ def _nearest_divisor(n: int, target: int) -> int:
     """Divisor of n closest to target (ties favour the larger divisor)."""
     divisors = [d for d in range(1, n + 1) if n % d == 0]
     return min(divisors, key=lambda d: (abs(d - target), -d))
-
-
-def make_reference_grid(x, bc="periodic", min_points=0):
-    """Refined classical-reference grid containing the q-grid `x` as an
-    exact subset.  Returns (x_ref, take) with len(x_ref) >= min_points and
-    x_ref[take] == x.  Refinement factor k = ceil(min_points / N)."""
-    n = len(x)
-    k = max(1, int(np.ceil(min_points / n))) if min_points else 1
-    if bc == "dirichlet":
-        x_ref = np.linspace(0.0, 1.0, (n - 1) * k + 1, endpoint=True)
-    else:
-        x_ref = np.linspace(0.0, 1.0, n * k, endpoint=False)
-    take = np.arange(n) * k
-    return x_ref, take
 
 
 def construct_ic(x_grid, args, nu, ch_coeffs):
@@ -93,27 +81,6 @@ def construct_ic(x_grid, args, nu, ch_coeffs):
     if args.ic_amplitude != 1.0:
         u0 = u0 * args.ic_amplitude
     return u0
-
-
-def solve_burgers_subsampled(u0_ref, x_ref, take, nu, dt, n_steps,
-                             source_fn=None, bc="periodic"):
-    """FTCS on the refined grid, sub-stepped for stability, then subsampled
-    back to the q-grid.  Returns n_steps+1 snapshots on x_ref[take].
-
-    The refined grid has a smaller dx, so the caller's macro `dt` is split
-    into `sub` micro steps to satisfy the FTCS diffusion floor
-    dt <= dx^2/(2 nu) (0.25 safety also covers advection)."""
-    dx_ref = x_ref[1] - x_ref[0]
-    if nu > 0.0:
-        dt_stable = 0.25 * dx_ref * dx_ref / nu
-        sub = max(1, int(np.ceil(dt / dt_stable)))
-    else:
-        sub = 1
-    sols_fine = solve_burgers(
-        u0_ref, x_ref, nu, dt / sub, n_steps * sub,
-        source_fn=source_fn, bc=bc,
-    )
-    return [sols_fine[m * sub][take].copy() for m in range(n_steps + 1)]
 
 
 # *****************************************************************************
@@ -280,6 +247,15 @@ if __name__ == "__main__":
         "--bond-dim", type=int, default=None,
         help="MPS bond dimension (None=full, cole_hopf_circuit only)",
     )
+    parser.add_argument(
+        "--no-mps-prep", dest="use_mps_prep", action="store_false",
+        default=True,
+        help=(
+            "Prepare the initial state with QuantumCircuit.initialize "
+            "(O(2^q) gates) instead of the Ran-2020 MPS-to-circuit "
+            "pipeline (cole_hopf_circuit only).  Default: MPS prep on."
+        ),
+    )
 
     # Shots post-processing
     parser.add_argument(
@@ -326,15 +302,6 @@ if __name__ == "__main__":
             "converges (Itani App B truncation)."
         ),
     )
-    parser.add_argument(
-        "--readout", type=str, default="direct",
-        choices=["direct", "hadamard_per_bin"],
-        help="Shots readout strategy (cole_hopf_circuit and tebd_circuit shots): "
-             "'direct' = post-selected amplitude estimation; "
-             "'hadamard_per_bin' = signed Re(psi_k) via per-bin "
-             "Hadamard test (F2-10, F10-12).",
-    )
-
     # Reporting
     parser.add_argument(
         "--save-every", type=int, default=0,
@@ -543,6 +510,7 @@ if __name__ == "__main__":
         analytic_reference=args.analytic_reference,
         trotter_order=args.trotter_order,
         bond_dim=args.bond_dim,
+        use_mps_prep=args.use_mps_prep,
         shots=args.shots,
         backend_name=args.backend,
         backend_type=args.backend_type,
@@ -557,7 +525,6 @@ if __name__ == "__main__":
         phi_modes=args.phi_modes,
         fock_qubits=args.fock_qubits,
         qalb_collision_trotter_reps=args.qalb_collision_trotter_reps,
-        readout=args.readout,
         save_every=args.save_every,
         shock_pct=shock_pct,
     )

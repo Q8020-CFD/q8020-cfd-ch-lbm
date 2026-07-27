@@ -23,20 +23,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import numpy as np
 import pytest
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import UnitaryGate
 from scipy.linalg import expm
 from scipy.integrate import solve_ivp
 
 from lib_qalb_circuit import (
     F_EQ0,
-    cell_collision_circuit,
+    _embed,
     cell_collision_gate,
     cell_collision_shots,
     cell_collision_unitary_B,
     collision_flow_generator,
     collision_hamiltonian_pauli,
     decode_cell,
-    decode_cell_B,
-    decode_value,
     encode_cell,
     encode_cell_B,
     encode_value,
@@ -62,6 +62,53 @@ def classical_flow(df: np.ndarray, T: float) -> np.ndarray:
         ])
 
     return solve_ivp(rhs, [0, T], df, rtol=1e-11, atol=1e-13).y[:, -1]
+
+
+def decode_value(psi_reg: np.ndarray) -> float:
+    """Exact linear readout x = <1|psi>/<0|psi>  (Eq C20, P_1/P_0 = x)."""
+    return float((psi_reg[1] / psi_reg[0]).real)
+
+
+def decode_cell_B(psi: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Read each density as the normalised <q_i> (scale invariant, so the
+    deflation scalar cancels)."""
+    d = q.shape[0]
+    n = np.real(psi.conj() @ psi)
+    return np.array([np.real(psi.conj() @ _embed(q, i, d) @ psi) / n
+                     for i in range(3)])
+
+
+def _sym_sqrt(A: np.ndarray) -> np.ndarray:
+    w, V = np.linalg.eigh(0.5 * (A + A.conj().T))
+    w = np.clip(w.real, 0.0, None)
+    return (V * np.sqrt(w)) @ V.conj().T
+
+
+def cell_collision_block_unitary(tau: float, qc: int,
+                                 collision_time: float) -> tuple[np.ndarray, float]:
+    """Sz-Nagy dilation of the per-site collision A = U_cell/alpha
+    (U_cell = exp(T*G), state independent, built once).  Returns (dilation
+    unitary on 3*qc+1 qubits, alpha).  Post-selecting the ancilla |0>
+    applies A; the scale 1/alpha cancels in the ratio readout."""
+    qop, D, _ = finite_position_ops(qc)
+    U_cell = expm(collision_time * collision_flow_generator(qop, D, tau))
+    alpha = float(np.linalg.norm(U_cell, 2)) * (1.0 + 1e-9)
+    A = U_cell / alpha
+    d3 = A.shape[0]
+    S = _sym_sqrt(np.eye(d3) - A @ A.conj().T)
+    T = _sym_sqrt(np.eye(d3) - A.conj().T @ A)
+    return np.block([[A, S], [T, -A.conj().T]]), alpha
+
+
+def cell_collision_circuit(tau: float, qc: int, collision_time: float):
+    """Per-site collision as a Qiskit circuit on 3*qc system + 1 ancilla.
+    System qubits 0..3qc-1 (the 3 density registers), ancilla = top qubit.
+    """
+    n_sys = 3 * qc
+    U, alpha = cell_collision_block_unitary(tau, qc, collision_time)
+    qc_circ = QuantumCircuit(n_sys + 1, name="qalb_collide")
+    qc_circ.append(UnitaryGate(U, label="A_blk"), range(n_sys + 1))
+    return qc_circ, alpha
 
 
 def test_gate1_finite_position_embedding():

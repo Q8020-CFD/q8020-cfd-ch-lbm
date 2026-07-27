@@ -181,28 +181,18 @@ def solve_burgers(
 
 
 def make_reference_grid(
-    x: np.ndarray, bc: str = "periodic", min_points: int = 200,
+    x: np.ndarray, bc: str = "periodic", min_points: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Refined grid (>= min_points) that contains x as an exact subset.
-
-    Returns (x_ref, take) such that ``x_ref[take] == x`` exactly.  The
-    refinement factor respects the BC endpoint convention: periodic grids
-    (endpoint excluded) refine as N_ref = k*N; Dirichlet grids (both
-    endpoints) refine as N_ref = m*(N-1)+1.
-    """
-    N = len(x)
+    """Refined classical-reference grid containing the q-grid `x` as an
+    exact subset.  Returns (x_ref, take) with len(x_ref) >= min_points and
+    x_ref[take] == x.  Refinement factor k = ceil(min_points / N)."""
+    n = len(x)
+    k = max(1, int(np.ceil(min_points / n))) if min_points else 1
     if bc == "dirichlet":
-        m = max(1, int(np.ceil((min_points - 1) / (N - 1))))
-        n_ref = m * (N - 1) + 1
-        x_ref = np.linspace(x[0], x[-1], n_ref)
-        take = np.arange(N) * m
+        x_ref = np.linspace(0.0, 1.0, (n - 1) * k + 1, endpoint=True)
     else:
-        dx = x[1] - x[0]
-        length = N * dx
-        k = max(1, int(np.ceil(min_points / N)))
-        n_ref = k * N
-        x_ref = x[0] + (length / n_ref) * np.arange(n_ref)
-        take = np.arange(N) * k
+        x_ref = np.linspace(0.0, 1.0, n * k, endpoint=False)
+    take = np.arange(n) * k
     return x_ref, take
 
 
@@ -216,55 +206,21 @@ def solve_burgers_subsampled(
     source_fn=None,
     bc: str = "periodic",
 ) -> list[np.ndarray]:
-    """FTCS on the refined grid, snapshotted at the caller's dt cadence.
+    """FTCS on the refined grid, sub-stepped for stability, then subsampled
+    back to the q-grid.  Returns n_steps+1 snapshots on x_ref[take].
 
-    Explicit FTCS on a fine grid is stability-limited (diffusion limit
-    ~ dx^2/2nu, advection-diffusion von Neumann limit ~ 2nu/umax^2), so
-    each caller step of size dt is integrated with n_sub internal
-    substeps small enough to stay stable.  Snapshots are taken only at
-    the caller times t = k*dt and subsampled to the quantum nodes via
-    ``take``.  Returns a length n_steps+1 list of coarse-length arrays.
-    """
-    dx = x_ref[1] - x_ref[0]
-    umax = max(float(np.max(np.abs(u0_ref))), 1e-12)
-    if nu > 0:
-        dt_diff = dx * dx / (2.0 * nu)
-        dt_adv = 2.0 * nu / (umax * umax)
-        dt_stable = 0.5 * min(dt_diff, dt_adv)
+    The refined grid has a smaller dx, so the caller's macro `dt` is split
+    into `sub` micro steps to satisfy the FTCS diffusion floor
+    dt <= dx^2/(2 nu) (0.25 safety also covers advection)."""
+    dx_ref = x_ref[1] - x_ref[0]
+    if nu > 0.0:
+        dt_stable = 0.25 * dx_ref * dx_ref / nu
+        sub = max(1, int(np.ceil(dt / dt_stable)))
     else:
-        dt_stable = 0.5 * dx / umax
-    n_sub = max(1, int(np.ceil(dt / dt_stable))) if dt_stable > 0 else 1
-    dt_sub = dt / n_sub
-
-    take = np.asarray(take)
-    solutions = [u0_ref[take].copy()]
-    u = u0_ref.copy()
-    for step in range(n_steps):
-        blew = False
-        for s in range(n_sub):
-            t = step * dt + s * dt_sub
-            g = (
-                source_fn(x_ref, t)
-                if source_fn is not None
-                else np.zeros_like(u)
-            )
-            with np.errstate(over="ignore", invalid="ignore"):
-                u = u + dt_sub * compute_rhs_shift(u, dx, nu, g, bc=bc)
-            if not np.all(np.isfinite(u)):
-                blew = True
-                break
-        if blew:
-
-            print(
-                f"[burgers] FTCS reference blowup at step "
-                f"{step + 1}/{n_steps} (t={(step + 1) * dt:.4e}); "
-                f"padding remaining steps with NaN",
-                file=sys.stderr, flush=True,
-            )
-            nan_fill = np.full(len(take), np.nan)
-            solutions.extend([nan_fill] * (n_steps - step))
-            break
-        solutions.append(u[take].copy())
-
-    return solutions
+        sub = 1
+    sols_fine = solve_burgers(
+        u0_ref, x_ref, nu, dt / sub, n_steps * sub,
+        source_fn=source_fn, bc=bc,
+    )
+    return [sols_fine[m * sub][take].copy() for m in range(n_steps + 1)]
 
