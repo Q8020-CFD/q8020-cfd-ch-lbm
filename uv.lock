@@ -827,6 +827,45 @@ wheels = [
 ]
 
 [[package]]
+name = "q8020-backend-utils"
+version = "0.1.0"
+source = { editable = "../q8020-backend-utils" }
+
+[package.optional-dependencies]
+qiskit = [
+    { name = "q8020-cfd-metautil" },
+    { name = "qiskit" },
+    { name = "qiskit-aer" },
+    { name = "qiskit-ibm-runtime" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bloqade", extras = ["qasm2"], marker = "extra == 'all'" },
+    { name = "bloqade", extras = ["qasm2"], marker = "extra == 'bloqade'" },
+    { name = "bloqade", extras = ["qasm2"], marker = "extra == 'dev'" },
+    { name = "bloqade-pyqrack", extras = ["pyqrack-cpu"], marker = "extra == 'all'" },
+    { name = "bloqade-pyqrack", extras = ["pyqrack-cpu"], marker = "extra == 'bloqade'" },
+    { name = "bloqade-pyqrack", extras = ["pyqrack-cpu"], marker = "extra == 'dev'" },
+    { name = "cirq", marker = "extra == 'all'" },
+    { name = "cirq", marker = "extra == 'cirq'" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
+    { name = "q8020-cfd-metautil", marker = "extra == 'all'", editable = "../q8020-cfd-metautil" },
+    { name = "q8020-cfd-metautil", marker = "extra == 'dev'", editable = "../q8020-cfd-metautil" },
+    { name = "q8020-cfd-metautil", marker = "extra == 'qiskit'", editable = "../q8020-cfd-metautil" },
+    { name = "qiskit", marker = "extra == 'all'", specifier = ">=2.0,<3.0" },
+    { name = "qiskit", marker = "extra == 'dev'", specifier = ">=2.0,<3.0" },
+    { name = "qiskit", marker = "extra == 'qiskit'", specifier = ">=2.0,<3.0" },
+    { name = "qiskit-aer", marker = "extra == 'all'" },
+    { name = "qiskit-aer", marker = "extra == 'dev'" },
+    { name = "qiskit-aer", marker = "extra == 'qiskit'" },
+    { name = "qiskit-ibm-runtime", marker = "extra == 'all'" },
+    { name = "qiskit-ibm-runtime", marker = "extra == 'dev'" },
+    { name = "qiskit-ibm-runtime", marker = "extra == 'qiskit'" },
+]
+provides-extras = ["qiskit", "bloqade", "cirq", "all", "dev"]
+
+[[package]]
 name = "q8020-cfd-ch-lbm"
 version = "0.1.0"
 source = { editable = "." }
@@ -834,8 +873,8 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pytest" },
+    { name = "q8020-backend-utils", extra = ["qiskit"] },
     { name = "q8020-cfd-metautil" },
-    { name = "q8020-cfd-qutil" },
     { name = "qiskit" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime" },
@@ -848,8 +887,8 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pytest" },
+    { name = "q8020-backend-utils", extras = ["qiskit"], editable = "../q8020-backend-utils" },
     { name = "q8020-cfd-metautil", editable = "../q8020-cfd-metautil" },
-    { name = "q8020-cfd-qutil", editable = "../q8020-cfd-qutil" },
     { name = "qiskit", specifier = ">=2.0,<3.0" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime" },
@@ -866,6 +905,8 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "plotly" },
+    { name = "pytest" },
+    { name = "scipy" },
     { name = "streamlit" },
     { name = "subprocess-tee" },
     { name = "watchdog" },
@@ -877,30 +918,11 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "plotly" },
+    { name = "pytest" },
+    { name = "scipy" },
     { name = "streamlit" },
     { name = "subprocess-tee" },
     { name = "watchdog" },
-]
-
-[[package]]
-name = "q8020-cfd-qutil"
-version = "0.1.0"
-source = { editable = "../q8020-cfd-qutil" }
-dependencies = [
-    { name = "numpy" },
-    { name = "q8020-cfd-metautil" },
-    { name = "qiskit" },
-    { name = "qiskit-aer" },
-    { name = "qiskit-ibm-runtime" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy" },
-    { name = "q8020-cfd-metautil", editable = "../q8020-cfd-metautil" },
-    { name = "qiskit", specifier = ">=2.0,<3.0" },
-    { name = "qiskit-aer" },
-    { name = "qiskit-ibm-runtime" },
 ]
 
 [[package]]
