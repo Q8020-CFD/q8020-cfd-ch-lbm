@@ -275,6 +275,19 @@ if __name__ == "__main__":
         help="Steps per segment (measure_reprepare mode only)",
     )
     parser.add_argument(
+        "--max-total-qubits", type=int, default=None,
+        help=(
+            "Absolute cap on cole_hopf_circuit width (data + MPS bond + "
+            "heat ancillas).  Default None = the original 2*q behavior "
+            "(min(segment_size, q) heat ancillas).  When a segment's step "
+            "count exceeds the heat-ancilla budget the propagator tiles it "
+            "with mid-circuit reset, which forces Aer's slow per-shot path; "
+            "set this >= q + n_bond + segment_size to keep the segment "
+            "fully deferred (fast sample-once).  On real hardware, where "
+            "width is cheap and reset costly, raise it freely."
+        ),
+    )
+    parser.add_argument(
         "--metric-transpile-timeout", type=float, default=60.0,
         help=(
             "Per-circuit wall-time cap (s) on the isolated basis-transpile "
@@ -521,6 +534,7 @@ if __name__ == "__main__":
         sign_recovery=args.sign_recovery,
         evolution_mode=args.evolution_mode,
         segment_size=args.segment_size,
+        max_total_qubits=args.max_total_qubits,
         metric_transpile_timeout=args.metric_transpile_timeout,
         phi_modes=args.phi_modes,
         fock_qubits=args.fock_qubits,

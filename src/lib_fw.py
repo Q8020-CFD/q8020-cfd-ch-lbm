@@ -64,6 +64,7 @@ class BurgersConfig(SolverConfig):
     sign_recovery: str = "none"
     evolution_mode: str = "single"
     segment_size: int = 10
+    max_total_qubits: int | None = None
     fock_qubits: int = 3
     qalb_collision_trotter_reps: int = 0
     metric_transpile_timeout: float = 60.0
@@ -252,6 +253,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
             source_fn=source_fn,
             evolution_mode=config.evolution_mode,
             segment_size=config.segment_size,
+            max_total_qubits=config.max_total_qubits,
             phi_modes=config.phi_modes,
             metric_transpile_timeout=config.metric_transpile_timeout,
         )

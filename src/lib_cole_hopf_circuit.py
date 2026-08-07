@@ -487,6 +487,7 @@ def build_segment_circuit(
     bc: str,
     bond_dim: int | None = None,
     use_mps_prep: bool = True,
+    max_total_qubits: int | None = None,
 ) -> tuple[QuantumCircuit, int, int, int]:
     """Build one measure-reprepare segment circuit (prep + segment_size
     Trotter steps), composed and ready to transpile.
@@ -494,6 +495,16 @@ def build_segment_circuit(
     Single source of truth for segment construction: used by the
     measure-reprepare loop AND the F12 hardware-runner dry-run so the
     reported CX/depth always matches what actually executes.
+
+    max_total_qubits: absolute cap on the segment width q + n_bond +
+        n_heat_anc.  None (default) leaves the propagator at its own 2*q
+        default (i.e. min(segment_size, q) heat ancillas).  When set, the
+        heat-ancilla budget is (max_total_qubits - q - n_bond), computed
+        AFTER n_bond is known so the MPS bond qubits are accounted for.  If
+        that budget is >= segment_size the segment is fully deferred (no
+        mid-circuit reset -> Aer's fast sample-once path); if smaller, the
+        propagator tiles it into ceil(segment_size / budget) reset rounds
+        (the per-shot trajectory path -- slow on Aer, avoid for sim).
 
     Returns (raw_qc, total_q, n_bond, n_heat_anc).
     """
@@ -509,10 +520,24 @@ def build_segment_circuit(
         prep_qc.initialize(psi_current.tolist(), range(q))
         n_bond = 0
 
-    # 2. segment_size-step evolution circuit (qft-diagonal)
+    # 2. segment_size-step evolution circuit (qft-diagonal).  With a total
+    #    cap set, hand the propagator a bond-aware qubit budget: heat
+    #    ancillas get whatever the cap leaves after data + bond.  Fail fast
+    #    (before the expensive transpile) if the cap can't seat even one.
+    heat_max_qubits = None
+    if max_total_qubits is not None:
+        heat_budget = max_total_qubits - n_bond
+        if heat_budget < q + 1:
+            raise ValueError(
+                f"max_total_qubits={max_total_qubits} too small: q={q} + "
+                f"n_bond={n_bond} leaves no room for a heat ancilla "
+                f"(need >= {q + n_bond + 1})"
+            )
+        heat_max_qubits = heat_budget
     T_segment = dt * segment_size
     full_qc = heat_qft_full_circuit(
         q, nu, T_segment, segment_size, L_box, bc=bc,
+        max_qubits=heat_max_qubits,
     )
 
     n_heat_anc = full_qc.num_qubits - q
@@ -551,6 +576,7 @@ def _run_shots_measure_reprepare(
     session: Any = None,
     sampler_options: dict | None = None,
     initial_layout: list[int] | None = None,
+    max_total_qubits: int | None = None,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Measure-and-reprepare (segmented) evolution: K segments of segment_size steps each.
 
@@ -633,10 +659,38 @@ def _run_shots_measure_reprepare(
         raw_qc, total_q, n_bond, n_heat_anc = build_segment_circuit(
             psi_current, q, nu, dt, segment_size, L_box, bc,
             bond_dim=bond_dim, use_mps_prep=use_mps_prep,
+            max_total_qubits=max_total_qubits,
         )
         # Construction wall time for this segment (prep + propagator
         # build + compose), measured from the segment start.
         construct_t = time.time() - t_segment
+
+        # One-time path diagnostic: n_heat_anc < segment_size means the
+        # propagator tiled the segment with mid-circuit reset, which forces
+        # Aer's per-shot trajectory path (slow, ~linear in shots).  Warn so
+        # the operator can raise --max-total-qubits or lower --segment-size.
+        if segment_idx == 0 and backend_type != "hardware":
+            reset_rounds = -(-segment_size // n_heat_anc)  # ceil
+            sv_gib = (1 << total_q) * 16 / (1 << 30)
+            if n_heat_anc < segment_size:
+                print(
+                    f"[_run_shots_measure_reprepare] SLOW PATH: "
+                    f"segment_size={segment_size} > heat_anc={n_heat_anc} "
+                    f"-> {reset_rounds} reset rounds/segment; Aer runs "
+                    f"per-shot (~linear in shots). Raise --max-total-qubits "
+                    f"to >= {q + n_bond + segment_size} (SV "
+                    f"{(1 << (q + n_bond + segment_size)) * 16 / (1 << 30):.2f} "
+                    f"GiB) for the fast deferred path, or lower "
+                    f"--segment-size.",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                print(
+                    f"[_run_shots_measure_reprepare] fast path: fully "
+                    f"deferred (no reset), width={total_q} "
+                    f"(SV {sv_gib:.2f} GiB), sample-once.",
+                    file=sys.stderr, flush=True,
+                )
 
         # 4. Transpile + execute
         #    AerSimulator handles arbitrary gates (ControlledGate,
@@ -837,6 +891,7 @@ def _run_shots_batch(
     seed: int | None = None,
     use_mps_prep: bool = True,
     metric_transpile_timeout: float = 60.0,
+    max_total_qubits: int | None = None,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Batch shots readout per spec §7 (P-C optimised).
 
@@ -877,6 +932,19 @@ def _run_shots_batch(
         f"for snap_steps={list(snap_steps)} shots={shots}",
         file=sys.stderr, flush=True,
     )
+    # Bond-aware heat-ancilla budget (see build_segment_circuit).  Here the
+    # "segment" is the whole s-step circuit, so the cap governs how many of
+    # the s steps defer vs reset-and-reuse.
+    heat_max_qubits = None
+    if max_total_qubits is not None:
+        heat_budget = max_total_qubits - n_bond
+        if heat_budget < q + 1:
+            raise ValueError(
+                f"max_total_qubits={max_total_qubits} too small: q={q} + "
+                f"n_bond={n_bond} leaves no room for a heat ancilla "
+                f"(need >= {q + n_bond + 1})"
+            )
+        heat_max_qubits = heat_budget
     t_build_start = time.time()
     raw_circs: list[QuantumCircuit] = []
     construct_times: list[float] = []
@@ -885,6 +953,7 @@ def _run_shots_batch(
         t_cc = time.time()
         full_qc = heat_qft_full_circuit(
             q, nu, dt * s, s, L_box, bc=bc,
+            max_qubits=heat_max_qubits,
         )
         n_heat_anc = full_qc.num_qubits - q
         total_q = q + n_bond + n_heat_anc
@@ -1085,6 +1154,7 @@ def run_cole_hopf_circuit_simulation(
     session: Any = None,
     sampler_options: dict | None = None,
     initial_layout: list[int] | None = None,
+    max_total_qubits: int | None = None,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
 
@@ -1200,6 +1270,7 @@ def run_cole_hopf_circuit_simulation(
                 session=session,
                 sampler_options=sampler_options,
                 initial_layout=initial_layout,
+                max_total_qubits=max_total_qubits,
             )
         else:
             batch_results = _run_shots_batch(
@@ -1214,6 +1285,7 @@ def run_cole_hopf_circuit_simulation(
                 seed=seed,
                 use_mps_prep=use_mps_prep,
                 metric_transpile_timeout=metric_transpile_timeout,
+                max_total_qubits=max_total_qubits,
             )
 
         for (phi_hat, met), s in zip(batch_results, snap_steps):
