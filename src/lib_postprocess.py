@@ -22,6 +22,28 @@ from q8020_cfd_metautil.solverfw import PostProcessor
 from lib_fd import compute_error
 
 
+def json_safe(obj: Any) -> Any:
+    """Coerce a nested structure to JSON-serialisable form.
+
+    Hardware/fake exec_info carries datetime and other non-JSON objects
+    in the job.metrics() payloads; the metautil fragment writer has no
+    default serializer, so sanitize before storing.  Dicts/lists
+    recurse; primitives and numpy scalars/arrays convert; anything else
+    is stringified.
+    """
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, (np.floating, np.integer)):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {str(k): json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    return str(obj)
+
+
 class BurgersPostProcessor(PostProcessor):
     """Collect step metrics and write output fragments.
 
@@ -341,7 +363,9 @@ class BurgersPostProcessor(PostProcessor):
             analysis_data["sign_recovery"] = step_metrics[0].get(
                 "sign_recovery", "none",
             )
-            analysis_data["per_step_metrics"] = step_metrics
+            # Sanitized: hardware runs carry job.metrics() payloads
+            # (datetimes) inside execute/segments_full.
+            analysis_data["per_step_metrics"] = json_safe(step_metrics)
         write_analysis(outdir, analysis_data, experiment_id=exp_id)
 
         # Artifacts fragment

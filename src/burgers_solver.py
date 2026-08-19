@@ -45,7 +45,7 @@ from lib_cole_hopf import (
     validate_cole_hopf_coeffs,
 )
 from lib_fd import compute_error
-from lib_fw import BurgersConfig, run_simulation_fw
+from lib_fw import BurgersConfig, resolve_hw_execution, run_simulation_fw
 from lib_postprocess import BurgersPostProcessor
 
 # Preferred steps-per-segment for --auto-cadence (matches the q=5/n_steps=98
@@ -297,6 +297,71 @@ if __name__ == "__main__":
             "long as needed; good for a dedicated metrics pass)."
         ),
     )
+    # Hardware execution (F12 port): real-IBM runs of the segmented
+    # measure-reprepare loop, one held Runtime Session per case.
+    hw = parser.add_argument_group(
+        "hardware execution (cole_hopf_circuit measure_reprepare)")
+    hw.add_argument(
+        "--session", type=str, default="auto",
+        choices=["auto", "on", "off"],
+        help=(
+            "Hold one Runtime Session for this case so the serial "
+            "measure-reprepare segments share a single queue slot.  "
+            "auto (default) = on for --backend-type hardware, off "
+            "otherwise.  'on' is also valid for --backend-type fake "
+            "(SamplerV2 local-testing mode: exercises the exact "
+            "hardware code path with no credentials).  Correctness "
+            "never depends on the session; the IBM open plan forbids "
+            "them, so use 'off' there (N separate queued jobs)."
+        ),
+    )
+    hw.add_argument(
+        "--measure-mitigation", type=str, default="auto",
+        choices=["auto", "on", "off"],
+        help=(
+            "TREX measurement mitigation (SamplerV2 twirling; "
+            "measure_reprepare path only).  auto (default) = on for "
+            "hardware, off otherwise."
+        ),
+    )
+    hw.add_argument(
+        "--dynamical-decoupling", type=str, default="auto",
+        choices=["auto", "on", "off"],
+        help=(
+            "Dynamical decoupling (XpXm sequence; measure_reprepare "
+            "path only).  auto (default) = on for hardware, off "
+            "otherwise."
+        ),
+    )
+    hw.add_argument(
+        "--initial-layout", type=str, default=None,
+        help=(
+            "Comma-separated physical qubits pinning the transpiler "
+            "layout (virtual i -> the i-th value), e.g. "
+            "'12,13,14,18,17'.  Use to force a good-calibration chain "
+            "when the error-aware layout pass would pick bad qubits."
+        ),
+    )
+    hw.add_argument(
+        "--hw-dry-run", action="store_true",
+        help=(
+            "Transpile segment 0 against the resolved backend, print "
+            "the CX/depth report as JSON, and exit WITHOUT spending "
+            "shots (cole_hopf_circuit only).  On hardware this is the "
+            "authoritative per-segment cost (the in-loop metric "
+            "transpile is skipped under a held Session)."
+        ),
+    )
+    hw.add_argument(
+        "--token", type=str, default=None,
+        help="IBM Quantum token (hardware only; default: saved account)")
+    hw.add_argument(
+        "--channel", type=str, default="ibm_cloud",
+        help="IBM Runtime channel (hardware only)")
+    hw.add_argument(
+        "--instance", type=str, default=None,
+        help="IBM instance CRN or hub/group/project (hardware only)")
+
     parser.add_argument(
         "--qalb-collision-trotter-reps", type=int, default=0,
         help=(
@@ -344,6 +409,24 @@ if __name__ == "__main__":
             if args.method in ("cole_hopf", "cole_hopf_circuit")
             else "sine"
         )
+
+    # Resolve the hardware auto/on/off tri-states to concrete values and
+    # stamp them back onto args, so metadata records what actually ran
+    # (not the raw auto request).  Fails fast on invalid combinations.
+    try:
+        hw_exec = resolve_hw_execution(
+            backend_type=args.backend_type,
+            evolution_mode=args.evolution_mode,
+            session=args.session,
+            measure_mitigation=args.measure_mitigation,
+            dynamical_decoupling=args.dynamical_decoupling,
+            initial_layout=args.initial_layout,
+        )
+    except ValueError as e:
+        parser.error(str(e))
+    args.session = hw_exec["use_session"]
+    args.measure_mitigation = hw_exec["measure_mitigation"]
+    args.dynamical_decoupling = hw_exec["dynamical_decoupling"]
 
     # Grid setup
     q = args.q
@@ -454,6 +537,40 @@ if __name__ == "__main__":
         file=sys.stderr, flush=True,
     )
 
+    # F12 pre-flight: transpile segment 0 against the resolved backend,
+    # report the true CX/depth, and stop before any shots are spent.
+    if args.hw_dry_run:
+        if args.method != "cole_hopf_circuit":
+            parser.error("--hw-dry-run requires --method cole_hopf_circuit")
+        from q8020_backend_utils.ibm.backend import get_backend
+        from lib_cole_hopf_circuit import dry_run_segment_transpile
+
+        backend = get_backend(
+            name=args.backend, backend_type=args.backend_type,
+            t1=args.t1, t2=args.t2, coupling_map=args.coupling_map,
+            token=args.token, channel=args.channel,
+            instance=args.instance,
+        )
+        stats = dry_run_segment_transpile(
+            u0, x, nu, dt, n_steps, args.segment_size, bc=args.bc,
+            bond_dim=args.bond_dim, use_mps_prep=args.use_mps_prep,
+            max_total_qubits=args.max_total_qubits,
+            backend=backend,
+            optimization_level=args.optimization_level,
+            seed=args.seed,
+            initial_layout=hw_exec["initial_layout"],
+        )
+        print(
+            f"[burgers] hw-dry-run: {stats['transpiled_2q_gates']} 2q "
+            f"gates, depth {stats['transpiled_depth']}, "
+            f"{stats['segment_qubits']} qubits x "
+            f"{stats['n_segments']} segments; stopping before "
+            f"execution.",
+            file=sys.stderr, flush=True,
+        )
+        print(json.dumps(stats, indent=2, default=str))
+        sys.exit(0)
+
     # Reference trajectory.  Three paths:
     #   1. --no-classical-reference: skip altogether.
     #   2. --ic cole_hopf_exact AND analytic_reference: closed-form
@@ -536,6 +653,13 @@ if __name__ == "__main__":
         segment_size=args.segment_size,
         max_total_qubits=args.max_total_qubits,
         metric_transpile_timeout=args.metric_transpile_timeout,
+        use_session=args.session,
+        measure_mitigation=args.measure_mitigation,
+        dynamical_decoupling=args.dynamical_decoupling,
+        initial_layout=hw_exec["initial_layout"],
+        ibm_token=args.token,
+        ibm_channel=args.channel,
+        ibm_instance=args.instance,
         phi_modes=args.phi_modes,
         fock_qubits=args.fock_qubits,
         qalb_collision_trotter_reps=args.qalb_collision_trotter_reps,
@@ -635,6 +759,28 @@ if __name__ == "__main__":
         t_method=t_method,
         args=args,
     )
+
+    # Backend calibration fragment (hardware/fake provenance).  The
+    # integrator stashes the resolved backend object on the config;
+    # best-effort -- never fail the run on a metadata hiccup.
+    resolved_backend = getattr(fw_config, "_resolved_backend", None)
+    if (
+        resolved_backend is not None
+        and args.backend_type in ("hardware", "fake")
+    ):
+        try:
+            from q8020_backend_utils.ibm.backend_meta import (
+                make_backend_meta,
+            )
+            from q8020_cfd_metautil.meta_fragment import write_backend
+
+            write_backend(
+                outdir, make_backend_meta(resolved_backend),
+                experiment_id=exp_id,
+            )
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            print(f"[burgers] backend meta skipped: {e}",
+                  file=sys.stderr, flush=True)
 
     # JSON summary to stdout (harvested by sweeper)
     print(json.dumps(summary, indent=2))

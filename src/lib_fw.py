@@ -8,6 +8,7 @@ code is unchanged.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -71,6 +72,17 @@ class BurgersConfig(SolverConfig):
     phi_modes: int = 0
     shock_pct: float | None = None
 
+    # Hardware execution (F12 port).  Booleans are the RESOLVED values
+    # (the solver maps the auto/on/off CLI tri-states before building
+    # the config), so metadata reflects what actually ran.
+    use_session: bool = False
+    measure_mitigation: bool = False
+    dynamical_decoupling: bool = False
+    initial_layout: list[int] | None = None
+    ibm_token: str | None = None
+    ibm_channel: str = "ibm_cloud"
+    ibm_instance: str | None = None
+
     def describe(self) -> dict[str, Any]:
         return {
             "equation": "burgers_1d",
@@ -84,6 +96,88 @@ class BurgersConfig(SolverConfig):
             "source": self.source,
             "n_steps": self.n_steps,
         }
+
+
+# -----------------------------------------------------------------------
+# Hardware execution helpers (F12 port)
+# -----------------------------------------------------------------------
+
+
+def resolve_hw_execution(
+    backend_type: str,
+    evolution_mode: str,
+    session: str = "auto",
+    measure_mitigation: str = "auto",
+    dynamical_decoupling: str = "auto",
+    initial_layout: str | None = None,
+) -> dict[str, Any]:
+    """Resolve the auto/on/off hardware CLI tri-states to concrete values.
+
+    `backend_type="fake"` routes through SamplerV2 local-testing mode
+    (the credential-free proxy for the exact hardware code path), so an
+    explicit `on` is legal there; plain Aer sim ignores sessions and
+    sampler options, so `on` is rejected rather than silently
+    mislabelling the run.  `auto` enables everything only for real
+    hardware.
+
+    Returns dict(use_session, measure_mitigation, dynamical_decoupling,
+    initial_layout).  Raises ValueError on invalid combinations.
+    """
+    sampler_path = backend_type in ("hardware", "fake")
+    auto_hw = backend_type == "hardware"
+
+    def _tri(name: str, value: str) -> bool:
+        if value == "on" and not sampler_path:
+            raise ValueError(
+                f"--{name} on is only valid for --backend-type "
+                "hardware/fake (plain Aer sim ignores SamplerV2 "
+                "options; the run would be mislabelled)."
+            )
+        return value == "on" or (value == "auto" and auto_hw)
+
+    use_session = _tri("session", session)
+    mit = _tri("measure-mitigation", measure_mitigation)
+    dd = _tri("dynamical-decoupling", dynamical_decoupling)
+
+    # Session + mitigation only exist on the measure-reprepare SamplerV2
+    # path.  Single mode's hardware branch is one async submit_job that
+    # routes through neither -- a held Session would sit idle and the
+    # mitigation flags would be recorded as on while running unmitigated.
+    # Disable (with a note) so metadata reflects what actually runs.
+    if evolution_mode != "measure_reprepare" and (use_session or mit or dd):
+        print(
+            "[burgers] NOTE: session/mitigation disabled: only "
+            "--evolution-mode measure_reprepare routes jobs through the "
+            "SamplerV2 + Session path (single mode is one async "
+            "submission).",
+            file=sys.stderr, flush=True,
+        )
+        use_session = mit = dd = False
+
+    layout = None
+    if initial_layout:
+        layout = [int(t) for t in initial_layout.split(",")]
+
+    return {
+        "use_session": use_session,
+        "measure_mitigation": mit,
+        "dynamical_decoupling": dd,
+        "initial_layout": layout,
+    }
+
+
+def build_sampler_options(measure_mitigation: bool,
+                          dynamical_decoupling: bool) -> dict | None:
+    """Nested SamplerV2 options dict for TREX + DD, or None if both off."""
+    opts: dict[str, Any] = {}
+    if measure_mitigation:
+        # TREX: twirled readout-error extinction.
+        opts["twirling"] = {"enable_measure": True}
+    if dynamical_decoupling:
+        opts["dynamical_decoupling"] = {
+            "enable": True, "sequence_type": "XpXm",
+        }
+    return opts or None
 
 
 # -----------------------------------------------------------------------
@@ -237,26 +331,60 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
                 backend_type=config.backend_type,
                 t1=config.t1, t2=config.t2,
                 coupling_map=config.coupling_map,
+                token=config.ibm_token,
+                channel=config.ibm_channel,
+                instance=config.ibm_instance,
+            )
+        # Expose the resolved backend so the solver can write the
+        # backend-calibration fragment (hardware/fake provenance).
+        config._resolved_backend = self.backend  # type: ignore[attr-defined]
+
+        sampler_options = build_sampler_options(
+            config.measure_mitigation, config.dynamical_decoupling,
+        )
+        # One held Session per case: the measure-reprepare segments are
+        # serial QPU jobs, and a Session lets them share a single queue
+        # slot.  Correctness never depends on it -- each segment is
+        # re-prepared classically from the prior segment's counts, so
+        # session-less job mode (IBM open plan) yields identical
+        # results, just N queue waits.
+        session_cm = None
+        if (
+            config.use_session
+            and config.shots > 0
+            and config.backend_type in ("hardware", "fake")
+        ):
+            from qiskit_ibm_runtime import Session
+            session_cm = Session(backend=self.backend)
+
+        def _run():
+            return run_cole_hopf_circuit_simulation(
+                u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
+                shots=config.shots,
+                snapshot_interval=max(1, config.save_every),
+                bond_dim=config.bond_dim,
+                use_mps_prep=config.use_mps_prep,
+                backend=self.backend,
+                backend_type=config.backend_type,
+                backend_name=config.backend_name,
+                optimization_level=config.optimization_level,
+                seed=config.seed,
+                source_fn=source_fn,
+                evolution_mode=config.evolution_mode,
+                segment_size=config.segment_size,
+                max_total_qubits=config.max_total_qubits,
+                phi_modes=config.phi_modes,
+                metric_transpile_timeout=config.metric_transpile_timeout,
+                allow_hardware=(config.backend_type == "hardware"),
+                session=session_cm,
+                sampler_options=sampler_options,
+                initial_layout=config.initial_layout,
             )
 
-        return run_cole_hopf_circuit_simulation(
-            u0, grid.xc, config.nu, dt, config.n_steps, bc=grid.bc,
-            shots=config.shots,
-            snapshot_interval=max(1, config.save_every),
-            bond_dim=config.bond_dim,
-            use_mps_prep=config.use_mps_prep,
-            backend=self.backend,
-            backend_type=config.backend_type,
-            backend_name=config.backend_name,
-            optimization_level=config.optimization_level,
-            seed=config.seed,
-            source_fn=source_fn,
-            evolution_mode=config.evolution_mode,
-            segment_size=config.segment_size,
-            max_total_qubits=config.max_total_qubits,
-            phi_modes=config.phi_modes,
-            metric_transpile_timeout=config.metric_transpile_timeout,
-        )
+        if session_cm is not None:
+            with session_cm:
+                return _run()
+        return _run()
 
 
 # -----------------------------------------------------------------------

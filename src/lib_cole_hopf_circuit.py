@@ -1129,6 +1129,99 @@ def _run_shots_batch(
     return results
 
 
+def forward_ch_psi0(
+    u0: np.ndarray,
+    dx: float,
+    nu: float,
+) -> tuple[np.ndarray, float, bool]:
+    """Forward Cole-Hopf transform u0 -> unit-norm psi0.
+
+    Single source of truth for the transform + centering policy, shared
+    by run_cole_hopf_circuit_simulation and the F12 hardware dry-run so
+    the dry-run's segment 0 is identical to what actually executes.
+
+    Returns (psi0, phi_norm, use_centering).
+    """
+    use_centering = _should_center(u0, dx, nu)
+    if use_centering:
+        log_phi, e_mid = cole_hopf_forward_centered(u0, dx, nu)
+        psi0 = log_phi_to_normalized_psi(log_phi)
+        phi_norm = 1.0
+        print(
+            f"[cole_hopf_circuit] centered exponent "
+            f"(e_mid={e_mid:.2f}, nu={nu:.1e})",
+            file=sys.stderr, flush=True,
+        )
+    else:
+        phi0 = cole_hopf_forward(u0, dx, nu)
+        phi_norm = float(np.linalg.norm(phi0))
+        if phi_norm < 1e-15:
+            raise ValueError(
+                "phi0 norm near zero; check IC and nu"
+            )
+        psi0 = phi0 / phi_norm
+    return psi0, phi_norm, use_centering
+
+
+def dry_run_segment_transpile(
+    u0: np.ndarray,
+    x: np.ndarray,
+    nu: float,
+    dt: float,
+    n_steps: int,
+    segment_size: int,
+    bc: str = "periodic",
+    bond_dim: int | None = None,
+    use_mps_prep: bool = True,
+    max_total_qubits: int | None = None,
+    backend: Any = None,
+    optimization_level: int = 1,
+    seed: int | None = None,
+    initial_layout: list[int] | None = None,
+) -> dict[str, Any]:
+    """Build segment 0 and transpile it against `backend`; no shots.
+
+    F12 pre-flight: reuses forward_ch_psi0 + build_segment_circuit (the
+    SAME construction the measure-reprepare loop runs), so the reported
+    CX/depth is the authoritative per-segment hardware cost.  Under a
+    held Session the in-loop metric transpile is skipped in favour of
+    this report.
+    """
+    dx = float(x[1] - x[0])
+    N = len(u0)
+    q = int(np.log2(N))
+    L_box = float(N * dx)
+    phi_bc = "neumann" if bc == "dirichlet" else bc
+
+    psi0, _, _ = forward_ch_psi0(u0, dx, nu)
+    psi_current, _ = normalize_state(psi0)
+
+    raw_qc, total_q, n_bond, n_heat_anc = build_segment_circuit(
+        psi_current, q, nu, dt, segment_size, L_box, phi_bc,
+        bond_dim=bond_dim, use_mps_prep=use_mps_prep,
+        max_total_qubits=max_total_qubits,
+    )
+    qc_t, info = transpile_circuit(
+        raw_qc, backend,
+        optimization_level=optimization_level,
+        seed_transpiler=seed,
+        initial_layout=initial_layout,
+    )
+    ops = qc_t.count_ops()
+    two_q = ops.get("cx", 0) + ops.get("ecr", 0) + ops.get("cz", 0)
+    return {
+        "segment_qubits": total_q,
+        "n_bond": n_bond,
+        "n_heat_anc": n_heat_anc,
+        "raw_depth": raw_qc.depth(),
+        "transpiled_depth": qc_t.depth(),
+        "transpiled_2q_gates": int(two_q),
+        "transpiled_ops": {k: int(v) for k, v in ops.items()},
+        "n_segments": n_steps // segment_size,
+        "transpile_info": info,
+    }
+
+
 def run_cole_hopf_circuit_simulation(
     u0: np.ndarray,
     x: np.ndarray,
@@ -1200,24 +1293,7 @@ def run_cole_hopf_circuit_simulation(
         )
 
     # Forward CH transform (reuse P1 centering logic)
-    use_centering = _should_center(u0, dx, nu)
-    if use_centering:
-        log_phi, e_mid = cole_hopf_forward_centered(u0, dx, nu)
-        psi0 = log_phi_to_normalized_psi(log_phi)
-        phi_norm = 1.0
-        print(
-            f"[cole_hopf_circuit] centered exponent "
-            f"(e_mid={e_mid:.2f}, nu={nu:.1e})",
-            file=sys.stderr, flush=True,
-        )
-    else:
-        phi0 = cole_hopf_forward(u0, dx, nu)
-        phi_norm = float(np.linalg.norm(phi0))
-        if phi_norm < 1e-15:
-            raise ValueError(
-                "phi0 norm near zero; check IC and nu"
-            )
-        psi0 = phi0 / phi_norm
+    psi0, phi_norm, use_centering = forward_ch_psi0(u0, dx, nu)
 
     print(
         f"[cole_hopf_circuit] propagator=qft-diagonal q={q} "
