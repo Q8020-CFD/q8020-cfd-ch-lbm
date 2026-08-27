@@ -65,6 +65,13 @@ class BurgersConfig(SolverConfig):
     sign_recovery: str = "none"
     evolution_mode: str = "single"
     segment_size: int = 10
+    # Collapse the per-step QFT/diagonal/QFT^-1 layers within each
+    # read-out-free stretch into one layer for the stretch's total time.
+    # Default ON: exact for the diagonal heat operator, so results are
+    # identical to the per-step form (to fp/sampling noise) while cutting
+    # circuit depth, gate count, and transpile/build time.  --no-collapse
+    # restores the per-step path for A/B validation.
+    collapse: bool = True
     max_total_qubits: int | None = None
     fock_qubits: int = 3
     qalb_collision_trotter_reps: int = 0
@@ -372,6 +379,7 @@ class ColeHopfCircuitIntegrator(_DelegatingIntegrator):
                 source_fn=source_fn,
                 evolution_mode=config.evolution_mode,
                 segment_size=config.segment_size,
+                collapse=config.collapse,
                 max_total_qubits=config.max_total_qubits,
                 phi_modes=config.phi_modes,
                 metric_transpile_timeout=config.metric_transpile_timeout,

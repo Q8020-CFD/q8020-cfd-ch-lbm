@@ -205,12 +205,42 @@ def heat_dct_full_circuit(
     T: float,
     N_steps: int,
     L_box: float,
+    collapse: bool = True,
 ) -> QuantumCircuit:
-    """Full evolution circuit: N_steps DCT-diagonal Trotter layers."""
+    """Full evolution circuit: N_steps DCT-diagonal Trotter layers.
+
+    collapse=True: the N_steps per-step layers are exactly equivalent to a
+    SINGLE DCT / diagonal / DCT^T built for the full time T, because the
+    diagonal heat operator is diagonal in the DCT basis so D(dt)^N = D(T)
+    entrywise (no Trotter error -- pure diffusion commutes with itself) and
+    the intermediate DCT^T/DCT pairs cancel with no data readout between
+    steps.  One post-select ancilla replaces the per-step reused ancilla.
+    """
     dt = T / N_steps
 
     data = list(range(q))
     anc = q
+
+    C = dct_matrix(q)
+    dct_gate = UnitaryGate(C, label="DCT")
+    dct_dag_gate = UnitaryGate(C.T, label="DCT_dag")
+
+    if collapse:
+        # One layer for the full T: theta built for T, single ancilla.
+        theta = compute_theta_dct(nu, T, q, L_box)
+        cond_qc = build_conditional_ry(data, anc, theta)
+        anc_cr = ClassicalRegister(1, "anc_hist")
+        data_cr = ClassicalRegister(q, "data")
+        qc = QuantumCircuit(q + 1, name="heat_dct_collapsed")
+        qc.add_register(anc_cr)
+        qc.add_register(data_cr)
+        qc.append(dct_gate, data)
+        qc.compose(cond_qc, inplace=True)
+        qc.append(dct_dag_gate, data)
+        qc.measure(anc, anc_cr[0])
+        for i in range(q):
+            qc.measure(data[i], data_cr[i])
+        return qc
 
     anc_cr = ClassicalRegister(N_steps, "anc_hist")
     data_cr = ClassicalRegister(q, "data")
@@ -219,9 +249,6 @@ def heat_dct_full_circuit(
     qc.add_register(data_cr)
 
     theta = compute_theta_dct(nu, dt, q, L_box)
-    C = dct_matrix(q)
-    dct_gate = UnitaryGate(C, label="DCT")
-    dct_dag_gate = UnitaryGate(C.T, label="DCT_dag")
     cond_qc = build_conditional_ry(data, anc, theta)
 
     for step in range(N_steps):
@@ -249,8 +276,18 @@ def heat_qft_full_circuit(
     L_box: float,
     bc: str = "periodic",
     max_qubits: int | None = None,
+    collapse: bool = True,
 ) -> QuantumCircuit:
     """Full evolution circuit: N_steps QFT-diagonal Trotter layers.
+
+    collapse=True: emit ONE QFT / diagonal / QFT^-1 built for the full time
+    T with a single post-select ancilla, instead of N_steps per-step layers.
+    Exact (not approximate): the heat diagonal D is diagonal in the Fourier
+    basis, so D(dt)^N = D(T) entrywise (no Trotter error -- pure diffusion
+    commutes with itself), and inside a segment with no intermediate data
+    readout the QFT^-1/QFT pairs between steps cancel to identity.  Reduces
+    the O(2^q) Mobius diagonal blocks and QFT pairs from N_steps to 1 and the
+    heat-ancilla demand to 1 (max_qubits is ignored when collapsed).
 
     Blocked deferred measurement, sized to the qubit budget.  The
     max_qubits budget leaves (max_qubits - q) ancilla qubits; the
@@ -279,26 +316,44 @@ def heat_qft_full_circuit(
     bc='neumann' dispatches to the DCT-II propagator path.
     """
     if bc == "neumann":
-        return heat_dct_full_circuit(q, nu, T, N_steps, L_box)
+        return heat_dct_full_circuit(q, nu, T, N_steps, L_box, collapse=collapse)
     if bc != "periodic":
         raise NotImplementedError(
             f"heat_qft_full_circuit: unsupported bc={bc!r}; "
             "expected 'periodic' or 'neumann'"
         )
 
+    data = list(range(q))
+    qft = QFTGate(q)
+    qft_inv = QFTGate(q).inverse()
+
+    if collapse:
+        # One layer for the full T: theta built for T, single ancilla.
+        theta = compute_theta_exact(nu, T, q, L_box)
+        cond_qc = build_conditional_ry(data, q, theta)
+        anc_cr = ClassicalRegister(1, "anc_hist")
+        data_cr = ClassicalRegister(q, "data")
+        qc = QuantumCircuit(q + 1, name="heat_qft_collapsed")
+        qc.add_register(anc_cr)
+        qc.add_register(data_cr)
+        qc.append(qft, data)
+        qc.compose(cond_qc, inplace=True)
+        qc.append(qft_inv, data)
+        qc.measure(q, anc_cr[0])
+        for i in range(q):
+            qc.measure(data[i], data_cr[i])
+        return qc
+
     if max_qubits is None:
         max_qubits = 2 * q
 
     dt = T / N_steps
 
-    data = list(range(q))
     # Ancilla qubits the budget allows, and the deferred block width.
     n_anc = max(1, max_qubits - q)
     block = min(n_anc, N_steps)
 
     theta = compute_theta_exact(nu, dt, q, L_box)
-    qft = QFTGate(q)
-    qft_inv = QFTGate(q).inverse()
     cond = [build_conditional_ry(data, q + j, theta) for j in range(block)]
 
     anc_cr = ClassicalRegister(N_steps, "anc_hist")
@@ -369,6 +424,7 @@ def run_cole_hopf_circuit_sv(
     snapshot_interval: int = 1,
     use_mps_prep: bool = True,
     bond_dim: int | None = None,
+    collapse: bool = True,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Run Cole-Hopf circuit evolution via statevector simulation.
 
@@ -380,13 +436,21 @@ def run_cole_hopf_circuit_sv(
         from psi0 (original behaviour).
     bond_dim: MPS truncation bond dimension (None = full rank).
         Only used when use_mps_prep is True.
+    collapse: if True, evolve one snapshot interval per `evolve` with a
+        step circuit built for dt*width (width = steps in that interval),
+        post-selecting once per interval instead of once per step.  The
+        final post-selected state is identical (projection onto ancilla-0
+        commutes with the diagonal evolution; intermediate renormalisation
+        scalars cancel), so ‖Δφ‖ is ~1e-12 vs the per-step path.  A single
+        end-of-interval renormalise is retained to avoid over/underflow.
 
     Returns (psi_snapshots, metrics_list) where each psi snapshot
     is the unit-norm data-register state after post-selection.
     """
     N = 1 << q
 
-    # qft-diagonal uses one post-selection ancilla per step.
+    # qft-diagonal uses one post-selection ancilla per step (or per
+    # collapsed interval).  Probe width to size the statevector.
     shared_step = _build_step_sv(q, nu, dt, L_box, bc)
     n_anc = shared_step.num_qubits - q
     sv_dim = N * (1 << n_anc)
@@ -414,6 +478,32 @@ def run_cole_hopf_circuit_sv(
     snapshots: list[np.ndarray] = []
     metrics: list[dict[str, Any]] = []
     p_success_total = 1.0
+
+    if collapse:
+        # Advance one snapshot interval per evolve, with a step circuit
+        # built for dt*width.  Post-select once per interval; the final
+        # normalised state matches the per-step path (see docstring).  The
+        # chunk boundaries are exactly the snapshot steps, so no snapshot
+        # ever falls inside a collapsed block.
+        step_done = 0
+        while step_done < n_steps:
+            width = min(snapshot_interval, n_steps - step_done)
+            chunk_step = _build_step_sv(q, nu, dt * width, L_box, bc)
+            sv = Statevector(sv).evolve(chunk_step).data
+            p0 = float(np.sum(np.abs(sv[:N]) ** 2))
+            p_success_total *= p0
+            sv_proj = np.zeros_like(sv)
+            if p0 > 1e-30:
+                sv_proj[:N] = sv[:N] / np.sqrt(p0)
+            sv = sv_proj
+            step_done += width
+            metrics.append({
+                "step": step_done,
+                "p_success_step": p0,
+                "p_success_total": p_success_total,
+            })
+            snapshots.append(np.real(sv[:N]).copy())
+        return snapshots, metrics
 
     for step in range(n_steps):
         sv = Statevector(sv).evolve(shared_step).data
@@ -488,9 +578,16 @@ def build_segment_circuit(
     bond_dim: int | None = None,
     use_mps_prep: bool = True,
     max_total_qubits: int | None = None,
+    collapse: bool = True,
 ) -> tuple[QuantumCircuit, int, int, int]:
     """Build one measure-reprepare segment circuit (prep + segment_size
     Trotter steps), composed and ready to transpile.
+
+    collapse=True: the segment's segment_size steps are emitted as a single
+    QFT/diagonal/QFT^-1 layer for the segment's total time (one heat ancilla),
+    exactly equivalent to the per-step form (see heat_qft_full_circuit).  The
+    heat-ancilla budget then trivially needs only 1, so max_total_qubits only
+    has to seat q + n_bond + 1.
 
     Single source of truth for segment construction: used by the
     measure-reprepare loop AND the F12 hardware-runner dry-run so the
@@ -527,6 +624,9 @@ def build_segment_circuit(
     heat_max_qubits = None
     if max_total_qubits is not None:
         heat_budget = max_total_qubits - n_bond
+        # Collapsed segments need exactly one heat ancilla; the per-step
+        # deferred path may want up to segment_size.  Either way the floor
+        # is q + n_bond + 1, so keep the same fail-fast guard.
         if heat_budget < q + 1:
             raise ValueError(
                 f"max_total_qubits={max_total_qubits} too small: q={q} + "
@@ -537,7 +637,7 @@ def build_segment_circuit(
     T_segment = dt * segment_size
     full_qc = heat_qft_full_circuit(
         q, nu, T_segment, segment_size, L_box, bc=bc,
-        max_qubits=heat_max_qubits,
+        max_qubits=heat_max_qubits, collapse=collapse,
     )
 
     n_heat_anc = full_qc.num_qubits - q
@@ -577,8 +677,15 @@ def _run_shots_measure_reprepare(
     sampler_options: dict | None = None,
     initial_layout: list[int] | None = None,
     max_total_qubits: int | None = None,
+    collapse: bool = True,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Measure-and-reprepare (segmented) evolution: K segments of segment_size steps each.
+
+    collapse=True: within each segment the segment_size QFT-diagonal layers
+    are emitted as a single collapsed layer (see build_segment_circuit).  The
+    seam architecture is unchanged -- same n_segments, same measure/decode/
+    re-prep between them -- so results match the per-step form to sampling
+    noise; only the intra-segment circuit shrinks.
 
     Between segments, classically read out post-selected amplitudes
     and re-prep as fresh IC.  No classical PDE physics — only
@@ -659,7 +766,7 @@ def _run_shots_measure_reprepare(
         raw_qc, total_q, n_bond, n_heat_anc = build_segment_circuit(
             psi_current, q, nu, dt, segment_size, L_box, bc,
             bond_dim=bond_dim, use_mps_prep=use_mps_prep,
-            max_total_qubits=max_total_qubits,
+            max_total_qubits=max_total_qubits, collapse=collapse,
         )
         # Construction wall time for this segment (prep + propagator
         # build + compose), measured from the segment start.
@@ -669,10 +776,21 @@ def _run_shots_measure_reprepare(
         # propagator tiled the segment with mid-circuit reset, which forces
         # Aer's per-shot trajectory path (slow, ~linear in shots).  Warn so
         # the operator can raise --max-total-qubits or lower --segment-size.
+        # When collapsed, the whole segment is ONE deferred layer on a single
+        # ancilla (no reset), so the n_heat_anc<segment_size heuristic does
+        # not apply -- it is always the fast sample-once path.
         if segment_idx == 0 and backend_type != "hardware":
             reset_rounds = -(-segment_size // n_heat_anc)  # ceil
             sv_gib = (1 << total_q) * 16 / (1 << 30)
-            if n_heat_anc < segment_size:
+            if collapse:
+                print(
+                    f"[_run_shots_measure_reprepare] fast path: collapsed "
+                    f"segment ({segment_size} steps -> 1 QFT-diagonal layer, "
+                    f"1 ancilla, no reset), width={total_q} "
+                    f"(SV {sv_gib:.2f} GiB), sample-once.",
+                    file=sys.stderr, flush=True,
+                )
+            elif n_heat_anc < segment_size:
                 print(
                     f"[_run_shots_measure_reprepare] SLOW PATH: "
                     f"segment_size={segment_size} > heat_anc={n_heat_anc} "
@@ -892,8 +1010,15 @@ def _run_shots_batch(
     use_mps_prep: bool = True,
     metric_transpile_timeout: float = 60.0,
     max_total_qubits: int | None = None,
+    collapse: bool = True,
 ) -> list[tuple[np.ndarray, dict[str, Any]]]:
     """Batch shots readout per spec §7 (P-C optimised).
+
+    collapse=True: each snap_step circuit (which evolves the whole [0, s]
+    with no intermediate readout) is emitted as a single collapsed
+    QFT/diagonal/QFT^-1 layer for time s*dt -- the maximal collapse, one heat
+    ancilla instead of s deferred ancillas.  Exactly equivalent (see
+    heat_qft_full_circuit).
 
     Builds one circuit per snap_step, transpiles all in a single
     ``transpile([...], backend)`` call, then runs each.  One
@@ -953,7 +1078,7 @@ def _run_shots_batch(
         t_cc = time.time()
         full_qc = heat_qft_full_circuit(
             q, nu, dt * s, s, L_box, bc=bc,
-            max_qubits=heat_max_qubits,
+            max_qubits=heat_max_qubits, collapse=collapse,
         )
         n_heat_anc = full_qc.num_qubits - q
         total_q = q + n_bond + n_heat_anc
@@ -1248,8 +1373,18 @@ def run_cole_hopf_circuit_simulation(
     sampler_options: dict | None = None,
     initial_layout: list[int] | None = None,
     max_total_qubits: int | None = None,
+    collapse: bool = True,
 ) -> tuple[list[np.ndarray], list[dict[str, Any]]]:
     """Full Cole-Hopf circuit Burgers solver.
+
+    collapse: opt-in per-step QFT/QFT^-1 collapse for the heat propagator.
+        Within any stretch of evolution with no intermediate data readout
+        (a measure-reprepare segment, a `single`-mode snap circuit, or an
+        SV snapshot interval), emit ONE QFT/diagonal/QFT^-1 built for that
+        stretch's total time instead of N per-step layers.  Exact for the
+        diagonal heat operator (D(dt)^N = D(N*dt), QFT pairs cancel) so the
+        output matches the per-step form to floating-point/sampling noise;
+        seam count and snapshot placement are unchanged.
 
     1. Forward CH transform: u0 -> phi0 -> psi0 (unit norm)
     2. Circuit evolution of the heat equation on psi
@@ -1330,6 +1465,16 @@ def run_cole_hopf_circuit_simulation(
                     f"set --save-every to a multiple of "
                     f"--segment-size"
                 )
+            if collapse and bad:
+                # Collapse hides intra-segment steps; a misaligned snapshot
+                # would silently return the wrong-time phi.  Redundant with
+                # the check above, but assert loudly so collapse can never
+                # depend on the alignment holding by accident (spec §5.3).
+                raise ValueError(
+                    f"collapse requires every snapshot on a segment "
+                    f"boundary; misaligned snap_steps {bad} for "
+                    f"segment_size={segment_size}"
+                )
             batch_results = _run_shots_measure_reprepare(
                 psi0, q, nu, dt, snap_steps, L_box,
                 phi_norm,
@@ -1347,6 +1492,7 @@ def run_cole_hopf_circuit_simulation(
                 sampler_options=sampler_options,
                 initial_layout=initial_layout,
                 max_total_qubits=max_total_qubits,
+                collapse=collapse,
             )
         else:
             batch_results = _run_shots_batch(
@@ -1362,6 +1508,7 @@ def run_cole_hopf_circuit_simulation(
                 use_mps_prep=use_mps_prep,
                 metric_transpile_timeout=metric_transpile_timeout,
                 max_total_qubits=max_total_qubits,
+                collapse=collapse,
             )
 
         for (phi_hat, met), s in zip(batch_results, snap_steps):
@@ -1388,6 +1535,7 @@ def run_cole_hopf_circuit_simulation(
         snapshot_interval=snapshot_interval,
         use_mps_prep=use_mps_prep,
         bond_dim=bond_dim,
+        collapse=collapse,
     )
 
     # Build snapshot step indices (mirrors run_cole_hopf_circuit_sv)

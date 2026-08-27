@@ -275,6 +275,22 @@ if __name__ == "__main__":
         help="Steps per segment (measure_reprepare mode only)",
     )
     parser.add_argument(
+        "--no-collapse", dest="collapse", action="store_false",
+        default=True,
+        help=(
+            "cole_hopf_circuit only: DISABLE the default per-step "
+            "QFT/diagonal/QFT^-1 collapse and run the original per-step "
+            "path (one layer per time step).  Collapse (the default) folds "
+            "the layers within each read-out-free stretch (segment, "
+            "single-mode snap circuit, or SV snapshot interval) into ONE "
+            "layer for the stretch's total time -- exact for the diagonal "
+            "heat operator (D(dt)^k = D(k*dt), QFT pairs cancel), cutting "
+            "QFT pairs and O(2^q) Mobius diagonal blocks k->1 per segment "
+            "with identical results.  Pass --no-collapse only for A/B "
+            "validation against the per-step form."
+        ),
+    )
+    parser.add_argument(
         "--max-total-qubits", type=int, default=None,
         help=(
             "Absolute cap on cole_hopf_circuit width (data + MPS bond + "
@@ -651,6 +667,7 @@ if __name__ == "__main__":
         sign_recovery=args.sign_recovery,
         evolution_mode=args.evolution_mode,
         segment_size=args.segment_size,
+        collapse=args.collapse,
         max_total_qubits=args.max_total_qubits,
         metric_transpile_timeout=args.metric_transpile_timeout,
         use_session=args.session,
