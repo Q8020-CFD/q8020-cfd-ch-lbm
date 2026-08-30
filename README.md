@@ -4,7 +4,7 @@ Quantum CFD solver for 1D Burgers equation using a variation of QLBM and Cole-Ho
 
 See the docs for details:
 
-- [IEEE QC4PDE workshop paper, Sept 2026 (PDF)](docs/IEEE_QC4PDE_QLBM_CH.pdf)
+- [IEEE QC4PDE workshop paper, Sept 2026 (PDF)](https://github.com/Q8020-CFD/q8020-cfd-ch-lbm/raw/main/docs/IEEE_QC4PDE_QLBM_CH.pdf)
 - [Overview](docs/OVERVIEW-burgers-solver.md)
 - [Cole-Hopf method](docs/CH-method.md)
 - [LLM-generated code details](docs/LLM-gen-DETAILS-burgers-solver.md)
