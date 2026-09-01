@@ -161,7 +161,6 @@ class BurgersPostProcessor(PostProcessor):
             dx=float(x[1] - x[0]) if x is not None else None,
             dt=float(config.dt) if config.dt else None,
             cfl=config.cfl, n_steps=n_steps,
-            shock_pct=config.shock_pct,
             ic=config.ic,
             ic_modes=(
                 config.ic_modes if config.ic == "multimode" else None
@@ -386,7 +385,6 @@ class BurgersPostProcessor(PostProcessor):
             "N": 1 << config.q,
             "nu": config.nu,
             "n_steps": n_steps,
-            "shock_pct": config.shock_pct,
             "ic": config.ic,
             "ic_modes": (
                 config.ic_modes

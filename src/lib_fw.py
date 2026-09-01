@@ -77,7 +77,6 @@ class BurgersConfig(SolverConfig):
     qalb_collision_trotter_reps: int = 0
     metric_transpile_timeout: float = 60.0
     phi_modes: int = 0
-    shock_pct: float | None = None
 
     # Hardware execution (F12 port).  Booleans are the RESOLVED values
     # (the solver maps the auto/on/off CLI tri-states before building

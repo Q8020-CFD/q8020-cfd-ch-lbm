@@ -21,7 +21,6 @@ import argparse
 import json
 import sys
 import time
-from math import pi
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -113,13 +112,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n-steps", type=int, default=50,
         help="Number of time steps",
-    )
-    parser.add_argument(
-        "--shock-pct", type=float, default=None,
-        help=(
-            "Fraction of inviscid shock time (%%); overrides --n-steps. "
-            "T_end = (shock_pct/100) * 1/(2π)"
-        ),
     )
     parser.add_argument(
         "--ic", type=str, default=None,
@@ -522,19 +514,7 @@ if __name__ == "__main__":
         u0 = u0 * args.ic_amplitude
     source_fn = {"sine": source_term_sine, "none": None}[args.source]
 
-    # Shock formation time: t_shock = 1 / max|du0/dx| (inviscid estimate).
-    # For sine IC this equals 1/(2*pi); for other ICs it is computed from
-    # the actual initial gradient.
-    du0dx = np.gradient(u0, dx)
-    max_grad = np.max(np.abs(du0dx))
-    t_shock = 1.0 / max_grad if max_grad > 0 else 1.0 / (2 * pi)
-
-    shock_pct = args.shock_pct
-    if shock_pct is not None:
-        t_end = (shock_pct / 100.0) * t_shock
-        n_steps = round(t_end / (args.cfl * dx))
-    else:
-        n_steps = args.n_steps
+    n_steps = args.n_steps
 
     # Auto cadence: derive aligned segment-size/save-every from n_steps so
     # measure_reprepare never trips the "n_steps % segment_size" check.
@@ -681,7 +661,6 @@ if __name__ == "__main__":
         fock_qubits=args.fock_qubits,
         qalb_collision_trotter_reps=args.qalb_collision_trotter_reps,
         save_every=args.save_every,
-        shock_pct=shock_pct,
     )
 
     # Run selected method.  ftcs_reference is the shared classical

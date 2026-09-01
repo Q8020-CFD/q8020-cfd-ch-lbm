@@ -668,11 +668,7 @@ it; **`cole_hopf_circuit` does not support forcing and raises** if a
 non-`none` source is passed (§4.2.2). Cole–Hopf analytic-IC runs force
 `--source none` (§4.3).
 
-### 7.10 Time-window (`--shock-pct`, `--n-steps`)
-
-Either a percentage of the inviscid shock-formation time
-`t_shock = 1 / max|du₀/dx|` (resolves to an `n_steps` from the fixed
-CFL-derived `dt`), or an explicit step count.
+### 7.10 OMITTED - A. Gallo
 
 ### 7.11 Initial condition (`--ic`, `--ic-*`)
 
