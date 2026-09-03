@@ -8,6 +8,7 @@ See the docs for details:
 - [Overview](docs/OVERVIEW-burgers-solver.md)
 - [Cole-Hopf method](docs/CH-method.md)
 - [QLBM (QALB) method](docs/QLBM-method.md)
+- [FTCS reference](docs/FTCS.md)
 - [LLM-generated code details](docs/LLM-gen-DETAILS-burgers-solver.md)
 
 - [Q8020-CFD parent org](https://github.com/Q8020-CFD) (ask to collaborate)
